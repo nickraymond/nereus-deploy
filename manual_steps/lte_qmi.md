@@ -1,52 +1,31 @@
-Use a separate terminal/session for LTE bring-up.
+LTE modem bring-up stays manual in v1.
 
-1. Verify hardware enumerates:
-
+Suggested sequence:
+1. Verify hardware:
    lsusb
    ls /dev/ttyUSB*
-
-2. Install minicom if needed (the installer already did this):
-
+2. Install minicom if needed:
+   sudo apt-get install -y minicom
+3. Open modem console:
    sudo minicom -D /dev/ttyUSB2 -b 115200
-
-3. In minicom, verify:
-   AT
+4. Check:
    AT+CPIN?
    AT+CSQ
    AT+CEREG?
-
-4. Set APN:
+5. Set APN:
    AT+CGDCONT=1,"IP","iot0723.com.attz"
-
-5. Set modem USB mode:
+6. Match working USB mode:
    AT#USBCFG=0
    AT#REBOOT
-
-6. After modem reboot:
-
+7. Restart managers:
    sudo systemctl restart ModemManager
    sudo systemctl restart NetworkManager
-   sleep 5
-
-7. Verify QMI path:
-
+8. Verify QMI path:
    ls /dev/cdc-wdm*
-   lsmod | grep -E 'qmi|wwan|cdc_wdm|option'
    mmcli -L
-   mmcli -m 0
    nmcli device status
-
-8. If needed, recreate LTE profile:
-
-   sudo nmcli connection delete lte 2>/dev/null || true
+9. Create LTE profile if needed:
    sudo nmcli connection add type gsm ifname cdc-wdm0 con-name lte apn iot0723.com.attz
    sudo nmcli connection up lte
-
-9. Verify data path:
-
-   ip a
-   ip route
+10. Verify traffic over LTE:
    ping -I wwan0 1.1.1.1
-   curl --interface wwan0 https://nereus-vision-dev.onrender.com
-
-If LTE is not needed yet, choose skip when you return to the installer.

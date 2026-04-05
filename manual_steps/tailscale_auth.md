@@ -1,15 +1,17 @@
-Finish Tailscale authentication in the browser.
+Tailscale authentication is manual.
 
-1. The installer already ran:
-   sudo tailscale up --hostname <name> --ssh
+The installer runs:
+  sudo tailscale up --hostname <name> --ssh
 
-2. Open the login URL printed by Tailscale on your laptop.
-
-3. Authenticate the device.
-
-4. Verify:
-
+If Tailscale prints a login URL:
+1. Open it on your laptop
+2. Authenticate the Pi
+3. Verify:
    tailscale status
-   tailscale ssh pi@<tailscale-hostname>
 
-Return here after Tailscale authentication succeeds.
+Expected:
+- your Pi appears
+- your laptop appears
+
+Optional test:
+  tailscale ssh pi@<tailscale-hostname>

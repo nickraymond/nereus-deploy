@@ -1,52 +1,34 @@
 # nereus-deploy
 
-Public bootstrap installer for Nereus Vision Raspberry Pi devices.
+Public bootstrap repo for bringing up a Nereus Vision Pi.
 
-This repo is intentionally safe to keep public:
-- no secrets
-- no private SSH keys
-- no backend tokens
-- no customer credentials
+## What it does
 
-It installs and configures:
-- `nereus-agent` from the private `nereus-vision-dev` repo
-- `fieldcam_app`
-- optional Witty Pi software
-- optional Tailscale with SSH enabled by default
+- guided, prompt-driven install
+- state-aware resume after reboot
+- installs the private `nereus-vision-dev` repo after a manual GitHub SSH checkpoint
+- installs `nereus-agent`
+- optionally installs `fieldcam_app`
+- optionally installs Tailscale with SSH enabled
+- installs Witty Pi last, then resumes at the post-reboot manual config step
 
-It also walks the user through the manual steps that are still better done by a human:
-- GitHub SSH setup
-- Witty Pi interactive configuration
-- LTE modem bring-up
-- hardware validation
-
-## Quick start
+## Typical flow
 
 ```bash
-sudo apt update
-sudo apt install -y git
-git clone https://github.com/nickraymond/nereus-deploy.git
-cd nereus-deploy
 chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
-1. ask a few questions
-2. run safe automated steps
-3. pause for manual checkpoints when needed
-4. write service files and env files
-5. start the services if you approve
+If the installer reaches the Witty Pi install step, it will ask you to reboot and then rerun:
+
+```bash
+./install.sh
+```
+
+It will resume from the saved state file instead of starting over.
 
 ## Notes
 
-- Default API base is `https://nereus-vision-dev.onrender.com`
-- Tailscale defaults to `--ssh`
-- `fieldcam_app` is installed by default
-- the private repo clone still requires manual GitHub SSH setup first
-
-## Files
-
-- `install.sh` — guided installer
-- `templates/` — service and env templates
-- `manual_steps/` — human-in-the-loop instructions shown by the installer
+- Keep secrets out of this public repo.
+- The default API base URL is set in `install.sh` and can be overridden at prompt time.
+- Manual checkpoints are documented in `manual_steps/`.
