@@ -25,7 +25,7 @@ It also walks the user through the manual steps that are still better done by a 
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone https://github.com/YOUR-ORG/nereus-deploy.git
+git clone https://github.com/nickraymond/nereus-deploy.git
 cd nereus-deploy
 chmod +x install.sh
 ./install.sh
