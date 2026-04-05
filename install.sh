@@ -435,6 +435,15 @@ install_wittypi_last() {
   mark_step_done WITTYPI_POST_REBOOT
 }
 
+
+run_manual_ap_checkpoint() {
+  [[ "${STEP_AP_MANUAL:-}" == "done" ]] && return 0
+  if prompt_yes_no_default_yes "Show optional wlan0 AP setup checkpoint now?"; then
+    manual_checkpoint "[manual] wlan0 AP setup" "ap_mode.md" || true
+  fi
+  mark_step_done AP_MANUAL
+}
+
 print_final_summary() {
   cat <<EOF
 
@@ -469,7 +478,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "2"
+  save_state_var "INSTALLER_VERSION" "3"
 
   require_sudo
   check_platform
@@ -489,6 +498,7 @@ main() {
   run_manual_lte_checkpoint
   run_manual_camera_checkpoint
   install_wittypi_last
+  run_manual_ap_checkpoint
   print_final_summary
 }
 
