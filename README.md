@@ -32,3 +32,10 @@ It will resume from the saved state file instead of starting over.
 - Keep secrets out of this public repo.
 - The default API base URL is set in `install.sh` and can be overridden at prompt time.
 - Manual checkpoints are documented in `manual_steps/`.
+
+## If you need to pull new version of repot
+```
+cd ~
+mv nereus-deploy nereus-deploy-old
+git clone https://github.com/nickraymond/nereus-deploy.git
+```
