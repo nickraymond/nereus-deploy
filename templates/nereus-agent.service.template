@@ -1,0 +1,20 @@
+[Unit]
+Description=Nereus Vision System Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=__REPO_DIR__/device/system_agent
+EnvironmentFile=/etc/nereus/nereus-agent.env
+Environment=PYTHONPATH=__REPO_DIR__/device/system_agent/src
+ExecStart=__REPO_DIR__/device/system_agent/.venv/bin/python -m system_agent.main
+
+Restart=always
+RestartSec=5
+
+StandardOutput=append:/var/log/nereus/agent.log
+StandardError=append:/var/log/nereus/agent.err.log
+
+[Install]
+WantedBy=multi-user.target
