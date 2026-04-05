@@ -15,7 +15,7 @@ sudo nmcli radio wifi on
 sudo nano /etc/NetworkManager/system-connections/FieldCam-AP.nmconnection
 ```
 
-Paste and adjust the `ssid` if needed:
+Paste this exactly. The installer will auto-fill the SSID using the previously confirmed SYSTEM_ID, so you should not need to edit it manually.
 
 ```ini
 [connection]
@@ -26,7 +26,7 @@ interface-name=wlan0
 [wifi]
 band=bg
 mode=ap
-ssid=NEREUS SYS_002
+ssid=NEREUS ${SYSTEM_ID}
 
 [wifi-security]
 key-mgmt=wpa-psk
@@ -64,6 +64,10 @@ sudo nmcli connection up FieldCam-AP
 ```
 
 ## 6. Verify it worked
+
+```bash
+nmcli device status
+```
 
 You want to see:
 - `FieldCam-AP` in the connection list
