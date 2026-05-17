@@ -2,32 +2,22 @@
 
 Public bootstrap installer for Nereus Vision Raspberry Pi camera devices.
 
-This repo is intentionally safe to keep public:
-- no secrets
-- no private SSH keys
-- no backend tokens
-- no customer credentials
+This repo is intentionally safe to keep public: no secrets, no private SSH keys, no backend tokens, and no customer credentials.
 
-It installs and configures:
+## What it installs
+
 - `nereus-agent` from the private `nereus-vision-dev` repo
-- the required `fieldcam_app` field-service app
-- optional Tailscale with SSH enabled by default
-- current LiFePO4wered/Pi+ power-controller support
-- legacy Witty Pi support for backwards-compatible devices
-- BME280 / I2C Python dependencies used by the system agent
+- required `fieldcam_app` field-service app
+- Tailscale with SSH support
+- LTE/QMI user-space support: `ModemManager`, `libqmi-utils`, `usb-modeswitch`, `minicom`, `NetworkManager`
+- noninteractive `mmcli` sudo rule for the agent GPS/LTE path
+- LiFePO4wered/Pi+ power-controller support
+- optional legacy Witty Pi support
+- BME280 / I2C dependencies
+- external-media support tools for exFAT/FAT32 cards
+- optional automated `wlan0` FieldCam access point
 
 The default application branch is `staging` because the camera software is still in active development.
-
-It also walks the user through manual steps that are still better done by a human:
-- GitHub SSH setup for the private application repo
-- Tailscale authentication
-- LTE modem bring-up
-- camera / hardware validation
-- LiFePO4wered/Pi+ validation
-- legacy Witty Pi configuration, if selected
-- BME280 / I2C validation
-- optional external SD validation
-- optional wlan0 AP setup for field use
 
 ## Quick start
 
@@ -41,28 +31,20 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
-1. ask a few questions
-2. ask which power-controller hardware is installed
-3. run safe automated steps
-4. clone/update `nereus-vision-dev` on the `staging` branch by default
-5. create Python virtual environments
-6. install `nereus-agent`, `fieldcam_app`, and BME280 dependencies
-7. write service files and env files
-8. pause for manual checkpoints when needed
-9. start services if you approve
+## Important defaults
 
-## Defaults
-
-- API base: `https://nereus-vision-dev.onrender.com`
+- API base default: `https://nereus-vision-dev.onrender.com`
 - Private app repo: `git@github.com:nickraymond/nereus-vision-dev.git`
 - App branch: `staging`
 - App install directory: `~/code/nereus-vision-dev`
-- System agent: `device/system_agent`
-- Field service app: `fieldcam_app`
 - Agent env file: `/etc/nereus/nereus-agent.env`
+- Per-system cloud config cache: `/var/lib/nereus/system_config_cache_<SYSTEM_ID>.json`
 - Local media cache: `/var/lib/nereus/images`
-- Optional external media mount: `/mnt/nereus-media`
+- External media mount: `/mnt/nereus-media`
+- Health log dir: `/var/log/nereus/health`
+- Field AP SSID: `NEREUS <SYSTEM_ID>`
+
+Trailing slashes are stripped from the API base before writing the env file.
 
 ## Power controller choices
 
@@ -75,33 +57,42 @@ both          Install support for both hardware backends
 none          No power controller support
 ```
 
-The generated agent env uses:
+For LiFePO4wered/Pi+, the generated env uses:
 
 ```bash
 ENABLE_POWER_CONTROLLER=true
 POWER_CONTROLLER_BACKEND=auto
+ENABLE_WITTYPI=false
 ```
 
-for LiFePO4wered/Pi+, Witty Pi, or both. Use `none` for always-on bench/dev systems.
+The LiFePO4wered/Pi+ manual validation step includes setting `AUTO_BOOT=1` for unattended solar/battery recovery.
 
-## BME280 / I2C support
+## LTE/QMI note
 
-The installer installs the system packages needed for I2C and installs these Python packages into the `device/system_agent/.venv` environment:
+On the Telit/Sixfab LTE path:
 
-```bash
-adafruit-blinka
-adafruit-circuitpython-bme280
+```text
+cdc-wdm0 = modem control/QMI device managed by ModemManager/NetworkManager
+wwan0    = network data interface that gets the IP and carries traffic
 ```
 
-It also attempts to enable I2C using `raspi-config nonint do_i2c 0` when that command is available.
+It is expected for `nmcli device status` to show `cdc-wdm0` as `gsm connected lte`, while `ip a show wwan0` shows the LTE IP address. Downstream telemetry should continue to treat `wwan0` as the data/uplink interface.
 
 ## Update an existing deploy checkout
 
 ```bash
 cd ~/nereus-deploy
-git pull
+git fetch origin
+git reset --hard origin/main
+git clean -fd
 chmod +x install.sh
 ./install.sh
+```
+
+If previous installer state is stale during development, clear it:
+
+```bash
+rm -rf ~/.nereus-deploy
 ```
 
 ## Update the camera application on a Pi
@@ -119,12 +110,5 @@ sudo systemctl restart fieldcam
 
 - `install.sh` — guided installer
 - `templates/` — systemd and env templates
-- `manual_steps/` — human-in-the-loop instructions shown by the installer
-
-## If you need to pull a clean new version of this repo
-
-```bash
-cd ~
-mv nereus-deploy nereus-deploy-old
-git clone https://github.com/nickraymond/nereus-deploy.git
-```
+- `manual_steps/` — human-in-the-loop validation steps shown by the installer
+- `tools/watch_agent_logs.py` — optional Windows helper for streaming `/var/log/nereus/agent.log` over Tailscale SSH

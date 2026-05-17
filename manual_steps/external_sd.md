@@ -1,43 +1,79 @@
-# External SD validation
+# External SD storage validation
 
-Use this checkpoint if the camera has the external USB SD storage installed.
+Goal: verify the external media card can be detected, mounted, read, and written by the agent path.
 
-## 1. Confirm the block device and mount
+The card does not need a specific label or name.
+
+## 1. Show block devices
 
 ```bash
 lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,MODEL
 ```
 
-Expected pattern:
+Example for a 128 GB external card before mounting:
 
 ```text
-sdb1  vfat  NEREUS  /mnt/nereus-media
+sdb          117G                              MassStorageClass
+`-sdb1       117G exfat
 ```
 
-The exact device name can change, so prefer labels or UUIDs for persistent mounts.
+The Pi OS card should look like `mmcblk0`. Do not modify `mmcblk0`.
 
-## 2. Confirm the mount is writable
+## 2. Run the agent external-media validation tool if present
 
 ```bash
-touch /mnt/nereus-media/.nereus_write_test
-ls -lah /mnt/nereus-media/.nereus_write_test
-rm /mnt/nereus-media/.nereus_write_test
+cd /home/pi/code/nereus-vision-dev
+source device/system_agent/.venv/bin/activate
+if [[ -f device/tools/test_external_media_storage.py ]]; then
+  python device/tools/test_external_media_storage.py
+else
+  echo "device/tools/test_external_media_storage.py not found in this branch"
+fi
 ```
 
-## 3. Confirm agent env
+Expected:
+
+- the tool identifies a usable external partition
+- the tool mounts it, usually at `/mnt/nereus-media`
+- the tool performs write/read/delete validation
+- the tool reports success / storage OK
+
+## 3. Confirm mounted result
 
 ```bash
-sudo grep -E 'EXTERNAL_MEDIA_MOUNT|REQUIRE_EXTERNAL_MEDIA_STORAGE|LOCAL_IMAGE_DIR' /etc/nereus/nereus-agent.env
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,MODEL
+df -h /mnt/nereus-media 2>/dev/null || true
 ```
 
-Default values:
+Expected example after successful mount:
+
+```text
+sdb          117G                              MassStorageClass
+`-sdb1       117G exfat         /mnt/nereus-media
+```
+
+The exact label can be blank or any user-provided name.
+
+## 4. Confirm agent env
 
 ```bash
-EXTERNAL_MEDIA_MOUNT=/mnt/nereus-media
-REQUIRE_EXTERNAL_MEDIA_STORAGE=false
-LOCAL_IMAGE_DIR=/var/lib/nereus/images
+sudo grep -Ei 'ENABLE_EXTERNAL_MEDIA_STORAGE|EXTERNAL_MEDIA_MOUNT_POINT|EXTERNAL_MEDIA_IMAGE_DIR|REQUIRE_EXTERNAL_MEDIA_ARCHIVE|ALLOW_TRANSIENT' /etc/nereus/nereus-agent.env
 ```
 
-## 4. Notes
+Expected:
 
-For field use, FAT32/vfat is convenient because it is readable by Windows and macOS. If the card is removed while not writing, the agent should detect the missing mount and fall back according to config. Avoid removing it during a write.
+```text
+ENABLE_EXTERNAL_MEDIA_STORAGE=true
+EXTERNAL_MEDIA_MOUNT_POINT=/mnt/nereus-media
+EXTERNAL_MEDIA_IMAGE_DIR=/mnt/nereus-media/images
+REQUIRE_EXTERNAL_MEDIA_ARCHIVE=false
+ALLOW_TRANSIENT_CAPTURE_WITHOUT_EXTERNAL_MEDIA=true
+```
+
+Common failures:
+
+- External device appears as `sdb` but no `sdb1`: partition is missing or unreadable.
+- `FSTYPE` is blank: filesystem is missing or unsupported.
+- exFAT mount fails: confirm `exfatprogs` is installed.
+- Permission denied: check mount ownership/options.
+- Do not modify `mmcblk0`; that is the Pi OS card.

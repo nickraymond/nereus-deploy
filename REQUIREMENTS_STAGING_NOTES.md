@@ -1,42 +1,67 @@
 # Staging branch requirements notes
 
-These are the dependency updates that should also be reflected in the private `nereus-vision-dev` repo on the `staging` branch so the app requirements stay self-documenting.
+These notes describe the private `nereus-vision-dev` staging requirements that the public deploy repo now assumes.
 
 ## `device/system_agent/requirements.txt`
 
-Add these lines if they are not already present:
+The BME280 read path should be owned by the private app repo long-term:
 
 ```text
 adafruit-blinka
 adafruit-circuitpython-bme280
 ```
 
-The deploy installer installs these directly into the system-agent venv as a safety net, but the private app repo should own them long-term because the BME280 read path is part of the agent runtime.
+The deploy installer also installs these into the system-agent venv as a safety net.
 
-## OS packages needed on Raspberry Pi OS
+## OS packages installed by deploy
 
-The deploy installer now installs these packages:
-
-```bash
-sudo apt install -y python3-pip python3-venv i2c-tools build-essential libsystemd-dev
+```text
+git
+curl
+jq
+python3
+python3-venv
+python3-pip
+i2c-tools
+build-essential
+libsystemd-dev
+rpicam-apps
+python3-picamera2
+network-manager
+modemmanager
+libqmi-utils
+usb-modeswitch
+minicom
+exfatprogs
+dosfstools
+rfkill
 ```
-
-`i2c-tools` is needed for bus validation with `i2cdetect`.
-`build-essential` and `libsystemd-dev` are needed to build/install `lifepo4wered-cli` and `lifepo4wered-daemon` from `xorbit/LiFePO4wered-Pi`.
 
 ## Runtime env naming
 
-New code should prefer:
+Current staging env should use:
 
 ```bash
 ENABLE_POWER_CONTROLLER=true
 POWER_CONTROLLER_BACKEND=auto
+ENABLE_SYSTEM_HEALTH_MONITORING=true
+ENABLE_BME280_INTERNAL_ENV=true
+ENABLE_EXTERNAL_MEDIA_STORAGE=true
+EXTERNAL_MEDIA_MOUNT_POINT=/mnt/nereus-media
+REQUIRE_EXTERNAL_MEDIA_ARCHIVE=false
+ALLOW_TRANSIENT_CAPTURE_WITHOUT_EXTERNAL_MEDIA=true
 ```
 
-Keep legacy compatibility with:
+Do not use stale keys in new deploy templates:
 
 ```bash
-ENABLE_WITTYPI=true|false
+EXTERNAL_MEDIA_MOUNT
+REQUIRE_EXTERNAL_MEDIA_STORAGE
+SYSTEM_CONFIG_CACHE_PATH=/var/lib/nereus/system_config_cache.json
 ```
 
-but do not use `ENABLE_WITTYPI` as the primary new configuration key.
+Use a per-system config cache path instead:
+
+```bash
+SYSTEM_CONFIG_CACHE_PATH=/var/lib/nereus/system_config_cache_${SYSTEM_ID}.json
+```

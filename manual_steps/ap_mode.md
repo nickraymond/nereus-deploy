@@ -1,88 +1,54 @@
-# Setup wlan0 AP (optional)
+# Field service Wi-Fi AP validation
 
-Use this only if you want the Pi to host its own local access point for field use.
+Goal: confirm the Pi is broadcasting the field-service Wi-Fi access point.
 
-## 1. Unblock Wi-Fi
+The installer creates the NetworkManager AP profile automatically.
 
-```bash
-sudo rfkill unblock wifi
-sudo nmcli radio wifi on
+Expected AP name pattern:
+
+```text
+NEREUS <SYSTEM_ID>
 ```
 
-## 2. Create the AP connection file
+Example:
 
-```bash
-sudo nano /etc/NetworkManager/system-connections/FieldCam-AP.nmconnection
+```text
+NEREUS SYS_0003
 ```
 
-Paste this exactly. The installer will auto-fill the SSID using the previously confirmed SYSTEM_ID, so you should not need to edit it manually.
-
-```ini
-[connection]
-id=FieldCam-AP
-type=wifi
-interface-name=wlan0
-
-[wifi]
-band=bg
-mode=ap
-ssid=NEREUS ${SYSTEM_ID}
-
-[wifi-security]
-key-mgmt=wpa-psk
-psk=nereus-vision
-
-[ipv4]
-address1=10.42.0.1/24
-method=shared
-
-[ipv6]
-addr-gen-mode=default
-method=auto
-
-[proxy]
-```
-
-## 3. Fix permissions
-
-```bash
-sudo chown root:root /etc/NetworkManager/system-connections/FieldCam-AP.nmconnection
-sudo chmod 600 /etc/NetworkManager/system-connections/FieldCam-AP.nmconnection
-```
-
-## 4. Restart NetworkManager
-
-```bash
-sudo systemctl restart NetworkManager
-sleep 5
-```
-
-## 5. Bring the AP up
-
-```bash
-sudo nmcli connection up FieldCam-AP
-```
-
-## 6. Verify it worked
+## 1. Confirm NetworkManager state
 
 ```bash
 nmcli device status
 ```
 
-You want to see:
-- `FieldCam-AP` in the connection list
-- `wlan0` connected to `FieldCam-AP`
-- `wlan0` with `10.42.0.1/24`
+Expected pattern:
 
-## 7. Test from a client device
+```text
+wlan0          wifi      connected               FieldCam-AP
+eth0           ethernet  connected               Wired connection 1
+cdc-wdm0       gsm       connected               lte
+tailscale0     tun       connected (externally)  tailscale0
+lo             loopback  connected (externally)  lo
+```
 
-On your phone or laptop:
-1. connect to the SSID
-2. use password `nereus-vision`
-3. verify you can reach the Pi at `10.42.0.1`
-
-If your field app uses port 8080, test:
+## 2. Confirm the AP connection details
 
 ```bash
-curl http://10.42.0.1:8080
+nmcli connection show FieldCam-AP
 ```
+
+## 3. Test from a phone or laptop
+
+1. Scan for Wi-Fi networks.
+2. Connect to `NEREUS <SYSTEM_ID>`.
+3. Use password `nereus-vision` unless changed.
+4. Confirm the client connects.
+5. Optional: open the fieldcam service page or test the Pi at `10.42.0.1`.
+
+Common failures:
+
+- AP name shows literal `NEREUS ${SYSTEM_ID}`: installer variable expansion bug.
+- `wlan0` unavailable: Wi-Fi is blocked, disabled, or already managed by another profile.
+- Cannot connect: check WPA password and AP profile settings.
+- AP visible but service unavailable: check `sudo systemctl status fieldcam --no-pager`.

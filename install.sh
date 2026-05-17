@@ -17,6 +17,41 @@ mkdir -p "${STATE_DIR}"
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { log "[error] $*"; exit 1; }
 
+normalize_url_no_trailing_slash() {
+  local value="$1"
+  while [[ "${value}" == */ ]]; do
+    value="${value%/}"
+  done
+  printf '%s' "${value}"
+}
+
+wait_for_apt_lock() {
+  local max_wait_sec="${1:-300}"
+  local waited=0
+  while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+     || sudo fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    if (( waited >= max_wait_sec )); then
+      die "Timed out waiting for apt/dpkg lock after ${max_wait_sec}s. Another package process may be stuck."
+    fi
+    log "[apt] another apt/dpkg process is running; waiting..."
+    sleep 10
+    waited=$((waited + 10))
+  done
+  sudo dpkg --configure -a
+}
+
+apt_get_update_safe() {
+  wait_for_apt_lock 300
+  sudo apt-get update
+}
+
+apt_get_install_safe() {
+  wait_for_apt_lock 300
+  sudo apt-get install -y "$@"
+}
+
+
 ensure_state_file() { touch "${STATE_FILE}"; }
 
 save_state_var() {
@@ -113,10 +148,10 @@ prompt_yes_no_default_no() {
 prompt_power_controller() {
   local default="${POWER_CONTROLLER_CHOICE_VALUE:-lifepo4wered}"
   local reply
-  echo
-  echo "Power-controller hardware"
-  echo "-------------------------"
-  echo "Choose one: lifepo4wered, wittypi, both, none"
+  echo >&2
+  echo "Power-controller hardware" >&2
+  echo "-------------------------" >&2
+  echo "Choose one: lifepo4wered, wittypi, both, none" >&2
   while true; do
     read -r -p "Installed power-controller hardware [${default}]: " reply
     reply="${reply:-$default}"
@@ -125,7 +160,7 @@ prompt_power_controller() {
         printf '%s' "${reply}"
         return
         ;;
-      *) echo "Please answer lifepo4wered, wittypi, both, or none." ;;
+      *) echo "Please answer lifepo4wered, wittypi, both, or none." >&2 ;;
     esac
   done
 }
@@ -196,7 +231,7 @@ preflight_questions() {
   TAILSCALE_HOSTNAME="$(prompt_confirm_twice 'Tailscale hostname (example: nereus-sys-0002)')"
   SYSTEM_ID_VALUE="$(prompt_confirm_twice 'SYSTEM_ID (example: SYS_002)')"
   DEVICE_ID_VALUE="$(prompt_confirm_twice 'DEVICE_ID (example: CAM_002)')"
-  API_BASE_VALUE="$(prompt_default 'API base URL' "${API_BASE_VALUE:-$DEFAULT_API_BASE}")"
+  API_BASE_VALUE="$(normalize_url_no_trailing_slash "$(prompt_default 'API base URL' "${API_BASE_VALUE:-$DEFAULT_API_BASE}")")"
   REPO_URL_VALUE="$(prompt_default 'Private repo SSH URL' "${REPO_URL_VALUE:-$DEFAULT_REPO_SSH_URL}")"
   REPO_BRANCH_VALUE="$(prompt_default 'Repo branch to install' "${REPO_BRANCH_VALUE:-$DEFAULT_REPO_BRANCH}")"
   REPO_DIR_VALUE="$(prompt_default 'Repo install directory' "${REPO_DIR_VALUE:-$DEFAULT_REPO_DIR}")"
@@ -236,10 +271,11 @@ preflight_questions() {
   if prompt_yes_no_default_yes "Install Tailscale?"; then INSTALL_TAILSCALE_VALUE="true"; else INSTALL_TAILSCALE_VALUE="false"; fi
   ENABLE_TAILSCALE_SSH_VALUE="true"
   INSTALL_FIELDCAM_VALUE="true"
+  if prompt_yes_no_default_yes "Configure wlan0 as FieldCam-AP?"; then CONFIGURE_AP_VALUE="true"; else CONFIGURE_AP_VALUE="false"; fi
   if prompt_yes_no_default_yes "Enable and start nereus-agent.service and fieldcam.service at end?"; then START_SERVICES_VALUE="true"; else START_SERVICES_VALUE="false"; fi
 
   local state_key
-  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE POWER_CONTROLLER_BACKEND_VALUE ENABLE_WITTYPI_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_WITTYPI_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE START_SERVICES_VALUE; do
+  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE POWER_CONTROLLER_BACKEND_VALUE ENABLE_WITTYPI_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_WITTYPI_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE CONFIGURE_AP_VALUE START_SERVICES_VALUE; do
     if [[ -z "${!state_key+x}" ]]; then
       die "Internal installer error: expected ${state_key} to be set during preflight."
     fi
@@ -295,13 +331,40 @@ ensure_private_repo_access() {
 
 install_base_packages() {
   [[ "${STEP_APT:-}" == "done" ]] && return 0
-  log "[apt] installing base packages, I2C tools, camera tooling, LTE helpers, and build tools"
-  sudo apt-get update
-  sudo apt-get install -y \
+  log "[apt] installing base packages, I2C tools, camera tooling, LTE/QMI helpers, storage tools, and build tools"
+  apt_get_update_safe
+  apt_get_install_safe \
     git curl jq python3 python3-venv python3-pip \
     i2c-tools build-essential libsystemd-dev \
-    rpicam-apps python3-picamera2 minicom
+    rpicam-apps python3-picamera2 \
+    network-manager modemmanager libqmi-utils usb-modeswitch minicom \
+    exfatprogs dosfstools rfkill
   mark_step_done APT
+}
+
+setup_lte_userland() {
+  [[ "${STEP_LTE_USERLAND:-}" == "done" ]] && return 0
+  log "[lte] enabling ModemManager, restarting network managers, and retriggering udev"
+  sudo systemctl enable --now ModemManager
+  sudo systemctl restart ModemManager
+  sudo systemctl restart NetworkManager
+  sudo udevadm control --reload-rules
+  sudo udevadm trigger
+  sleep 10
+
+  local mmcli_path
+  mmcli_path="$(command -v mmcli || true)"
+  if [[ -n "${mmcli_path}" ]]; then
+    log "[lte] installing sudoers rule for noninteractive mmcli access"
+    echo "pi ALL=(root) NOPASSWD: ${mmcli_path}" | sudo tee /etc/sudoers.d/nereus-mmcli >/dev/null
+    sudo chown root:root /etc/sudoers.d/nereus-mmcli
+    sudo chmod 440 /etc/sudoers.d/nereus-mmcli
+    sudo visudo -c >/dev/null
+    sudo -n mmcli -L || true
+  else
+    log "[lte] mmcli not found after install; LTE manual validation will catch this"
+  fi
+  mark_step_done LTE_USERLAND
 }
 
 enable_i2c_if_possible() {
@@ -347,7 +410,7 @@ install_system_agent() {
   deactivate
 
   log "[agent] creating directories"
-  sudo mkdir -p /var/lib/nereus/images /var/log/nereus /etc/nereus /mnt/nereus-media
+  sudo mkdir -p /var/lib/nereus/images /var/log/nereus/health /etc/nereus /mnt/nereus-media /var/tmp/nereus-transient
   sudo chown -R pi:pi /var/lib/nereus /var/log/nereus
 
   log "[agent] writing env file"
@@ -355,6 +418,7 @@ install_system_agent() {
     -e "s|__API_BASE__|${API_BASE_VALUE}|g" \
     -e "s|__SYSTEM_ID__|${SYSTEM_ID_VALUE}|g" \
     -e "s|__DEVICE_ID__|${DEVICE_ID_VALUE}|g" \
+    -e "s|__SYSTEM_CONFIG_CACHE_PATH__|/var/lib/nereus/system_config_cache_${SYSTEM_ID_VALUE}.json|g" \
     -e "s|__ENABLE_POWER_CONTROLLER__|${ENABLE_POWER_CONTROLLER_VALUE}|g" \
     -e "s|__POWER_CONTROLLER_BACKEND__|${POWER_CONTROLLER_BACKEND_VALUE}|g" \
     -e "s|__ENABLE_WITTYPI__|${ENABLE_WITTYPI_VALUE}|g" \
@@ -414,6 +478,7 @@ install_tailscale_if_requested() {
   [[ "${INSTALL_TAILSCALE_VALUE}" == "true" ]] || return 0
   [[ "${STEP_TAILSCALE:-}" == "done" ]] && return 0
   log "[tailscale] installing tailscale"
+  wait_for_apt_lock 300
   curl -fsSL https://tailscale.com/install.sh | sh
   local cmd=(sudo tailscale up --hostname "${TAILSCALE_HOSTNAME}" --ssh)
   log "[tailscale] running: ${cmd[*]}"
@@ -422,6 +487,30 @@ install_tailscale_if_requested() {
     die "Tailscale authentication did not complete successfully."
   fi
   mark_step_done TAILSCALE
+}
+
+configure_field_ap_if_requested() {
+  [[ "${CONFIGURE_AP_VALUE:-true}" == "true" ]] || return 0
+  [[ "${STEP_FIELD_AP:-}" == "done" ]] && return 0
+  local ssid="NEREUS ${SYSTEM_ID_VALUE}"
+  local password="nereus-vision"
+
+  log "[ap] configuring wlan0 FieldCam-AP ssid=${ssid}"
+  sudo rfkill unblock wifi || true
+  sudo nmcli radio wifi on || true
+  sudo nmcli connection delete FieldCam-AP >/dev/null 2>&1 || true
+  sudo nmcli connection add type wifi ifname wlan0 con-name FieldCam-AP autoconnect yes ssid "${ssid}"
+  sudo nmcli connection modify FieldCam-AP \
+    802-11-wireless.mode ap \
+    802-11-wireless.band bg \
+    ipv4.method shared \
+    ipv6.method disabled \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "${password}"
+  sudo nmcli connection up FieldCam-AP || true
+  nmcli device status || true
+  save_state_var "FIELD_AP_SSID" "${ssid}"
+  mark_step_done FIELD_AP
 }
 
 start_services_if_requested() {
@@ -556,8 +645,8 @@ run_manual_external_sd_checkpoint() {
 
 run_manual_ap_checkpoint() {
   [[ "${STEP_AP_MANUAL:-}" == "done" ]] && return 0
-  if prompt_yes_no_default_yes "Show optional wlan0 AP setup checkpoint now?"; then
-    manual_checkpoint "[manual] wlan0 AP setup" "ap_mode.md" || true
+  if prompt_yes_no_default_yes "Show wlan0 AP validation checkpoint now?"; then
+    manual_checkpoint "[manual] wlan0 AP validation" "ap_mode.md" || true
   fi
   mark_step_done AP_MANUAL
 }
@@ -583,6 +672,13 @@ Install Witty Pi legacy:     ${INSTALL_WITTYPI_VALUE}
 Install Tailscale:           ${INSTALL_TAILSCALE_VALUE}
 Tailscale SSH:               ${ENABLE_TAILSCALE_SSH_VALUE}
 Install fieldcam_app:        true
+Health monitoring:           true
+BME280 internal env:         true
+LTE / ModemManager:          installed/enabled
+mmcli sudo rule:             installed
+External media storage:      enabled
+External media mount point:  /mnt/nereus-media
+Field AP SSID:               ${FIELD_AP_SSID:-NEREUS ${SYSTEM_ID_VALUE}}
 
 State file:
   ${STATE_FILE}
@@ -596,6 +692,9 @@ Useful commands:
   sudo tail -f /var/log/nereus/agent.log
   sudo systemctl status fieldcam --no-pager
   tailscale status
+  nmcli device status
+  mmcli -L
+  ip a show wwan0
   i2cdetect -y 1
   lifepo4wered-cli get
 EOF
@@ -603,7 +702,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4"
+  save_state_var "INSTALLER_VERSION" "4.3"
 
   require_sudo
   check_platform
@@ -614,12 +713,14 @@ main() {
   set_utc_timezone
   ensure_private_repo_access
   install_base_packages
+  setup_lte_userland
   enable_i2c_if_possible
   clone_or_update_repo
   install_system_agent
   install_fieldcam_required
   install_lifepo4wered_if_selected
   install_tailscale_if_requested
+  configure_field_ap_if_requested
   start_services_if_requested
   run_validation
   run_manual_lte_checkpoint
