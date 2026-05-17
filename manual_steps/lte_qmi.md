@@ -2,6 +2,8 @@
 
 Goal: verify the Telit modem is on the QMI path and LTE traffic works.
 
+The normal bring-up path is now NetworkManager + ModemManager. AT commands are debug-only.
+
 The installer installs the LTE packages, enables ModemManager, retriggers udev, and adds the noninteractive `mmcli` sudo rule used by the agent.
 
 ## 1. Verify hardware enumeration
@@ -37,14 +39,21 @@ mmcli -L
 nmcli device status
 ```
 
-Expected:
+Expected modem visibility:
 
 ```text
 /org/freedesktop/ModemManager1/Modem/0 [Telit] LE910C4-NF
-cdc-wdm0    gsm    connected    lte
 ```
 
-Do not create or activate the LTE profile until `mmcli -L` shows the modem.
+Expected NetworkManager state before the LTE profile is activated:
+
+```text
+cdc-wdm0    gsm    disconnected    --
+```
+
+That disconnected state is okay. It means the modem is visible and ready, but no data session is active yet.
+
+Do not create or activate the LTE profile until `mmcli -L` shows the modem and `nmcli device status` shows `cdc-wdm0` as a GSM device.
 
 ## 3. Create/recreate the LTE profile if needed
 
@@ -52,6 +61,12 @@ Do not create or activate the LTE profile until `mmcli -L` shows the modem.
 sudo nmcli connection delete lte 2>/dev/null || true
 sudo nmcli connection add type gsm ifname cdc-wdm0 con-name lte apn iot0723.com.attz
 sudo nmcli connection up lte
+```
+
+Expected after activation:
+
+```text
+cdc-wdm0    gsm    connected    lte
 ```
 
 ## 4. Verify data path over LTE
@@ -71,9 +86,22 @@ ping -I wwan0 works
 curl --interface wwan0 reaches the backend
 ```
 
-## 5. APN and AT-console checks if needed
+A successful backend response looks like:
 
-Only use the AT console if the modem is not registering or the APN needs to be checked.
+```json
+{"status":"ok","message":"Nereus Vision API running"}
+```
+
+## 5. AT-console checks only if needed
+
+Only use the AT console if one of these fails:
+
+- `lsusb` does not show Telit
+- `/dev/cdc-wdm0` is missing
+- `mmcli -L` shows no modems after ModemManager restart + udev trigger
+- SIM is not ready
+- modem is not registering
+- APN profile fails repeatedly
 
 ```bash
 sudo minicom -D /dev/ttyUSB2 -b 115200

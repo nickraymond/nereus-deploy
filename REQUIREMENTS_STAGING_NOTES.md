@@ -65,3 +65,17 @@ Use a per-system config cache path instead:
 ```bash
 SYSTEM_CONFIG_CACHE_PATH=/var/lib/nereus/system_config_cache_${SYSTEM_ID}.json
 ```
+
+
+## v4.4 validation updates
+
+- LTE primary path is ModemManager + NetworkManager; AT commands are troubleshooting only.
+- It is normal for `cdc-wdm0` to show `gsm disconnected` before the `lte` profile is activated.
+- External SD validation from repo root requires:
+
+```bash
+PYTHONPATH=/home/pi/code/nereus-vision-dev/device/system_agent/src \
+python device/tools/test_external_media_storage.py
+```
+
+- If Tailscale auth hangs after browser authentication, verify `tailscale status`, then rerun the installer and resume.

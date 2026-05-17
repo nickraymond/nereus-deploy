@@ -21,22 +21,36 @@ The Pi OS card should look like `mmcblk0`. Do not modify `mmcblk0`.
 
 ## 2. Run the agent external-media validation tool if present
 
+Run from the repo root and set `PYTHONPATH` so the tool can import the `system_agent` package:
+
 ```bash
 cd /home/pi/code/nereus-vision-dev
 source device/system_agent/.venv/bin/activate
+
 if [[ -f device/tools/test_external_media_storage.py ]]; then
-  python device/tools/test_external_media_storage.py
+  PYTHONPATH=/home/pi/code/nereus-vision-dev/device/system_agent/src   python device/tools/test_external_media_storage.py
 else
   echo "device/tools/test_external_media_storage.py not found in this branch"
 fi
 ```
 
-Expected:
+Expected success example:
 
-- the tool identifies a usable external partition
-- the tool mounts it, usually at `/mnt/nereus-media`
-- the tool performs write/read/delete validation
-- the tool reports success / storage OK
+```text
+[storage] external media mounted partition=/dev/sdb1 fstype=exfat label=NEREUS mount_point=/mnt/nereus-media
+[storage] external media ready image_dir=/mnt/nereus-media/images
+MEDIA_STORAGE_PLAN
+  archive_available: true
+  archive_mode: external_sd
+  image_dir: /mnt/nereus-media/images
+WRITE_TEST path=/mnt/nereus-media/images/week13_write_test.txt bytes=3
+MEDIA_STORAGE_STATUS
+  storage_ok: true
+  storage_full: false
+  storage_corrupt: false
+```
+
+A blank or different label is okay. The validation uses the agent storage logic, not a fixed card label.
 
 ## 3. Confirm mounted result
 
@@ -72,6 +86,7 @@ ALLOW_TRANSIENT_CAPTURE_WITHOUT_EXTERNAL_MEDIA=true
 
 Common failures:
 
+- `ModuleNotFoundError: No module named system_agent`: rerun with the `PYTHONPATH=.../device/system_agent/src` prefix shown above.
 - External device appears as `sdb` but no `sdb1`: partition is missing or unreadable.
 - `FSTYPE` is blank: filesystem is missing or unsupported.
 - exFAT mount fails: confirm `exfatprogs` is installed.

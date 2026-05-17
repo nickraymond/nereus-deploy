@@ -1,5 +1,7 @@
 # nereus-deploy
 
+Version: v4.4 fresh-SD reliability patch
+
 Public bootstrap installer for Nereus Vision Raspberry Pi camera devices.
 
 This repo is intentionally safe to keep public: no secrets, no private SSH keys, no backend tokens, and no customer credentials.
@@ -17,7 +19,7 @@ This repo is intentionally safe to keep public: no secrets, no private SSH keys,
 - external-media support tools for exFAT/FAT32 cards
 - optional automated `wlan0` FieldCam access point
 
-The default application branch is `staging` because the camera software is still in active development.
+The default application branch is `staging` because the camera software is still in active development. v4.4 keeps the normal LTE bring-up on the ModemManager/NetworkManager path; AT commands are debug-only.
 
 ## Quick start
 
@@ -69,14 +71,16 @@ The LiFePO4wered/Pi+ manual validation step includes setting `AUTO_BOOT=1` for u
 
 ## LTE/QMI note
 
-On the Telit/Sixfab LTE path:
+On the Telit/Sixfab LTE path, the primary setup path is ModemManager + NetworkManager. You should not need AT commands when `/dev/cdc-wdm0` is present and `mmcli -L` sees the modem.
+
+
 
 ```text
 cdc-wdm0 = modem control/QMI device managed by ModemManager/NetworkManager
 wwan0    = network data interface that gets the IP and carries traffic
 ```
 
-It is expected for `nmcli device status` to show `cdc-wdm0` as `gsm connected lte`, while `ip a show wwan0` shows the LTE IP address. Downstream telemetry should continue to treat `wwan0` as the data/uplink interface.
+It is expected for `nmcli device status` to show `cdc-wdm0` as `gsm connected lte`, while `ip a show wwan0` shows the LTE IP address. Downstream telemetry should continue to treat `wwan0` as the data/uplink interface. Seeing `cdc-wdm0 gsm disconnected` before profile activation is normal; creating/bringing up the `lte` profile starts the data session.
 
 ## Update an existing deploy checkout
 
@@ -112,3 +116,9 @@ sudo systemctl restart fieldcam
 - `templates/` — systemd and env templates
 - `manual_steps/` — human-in-the-loop validation steps shown by the installer
 - `tools/watch_agent_logs.py` — optional Windows helper for streaming `/var/log/nereus/agent.log` over Tailscale SSH
+
+## Fresh-SD notes from v4.4
+
+- If Tailscale authentication succeeds but the installer appears stuck at the login URL, press `Ctrl+C`, verify `tailscale status`, then rerun `./install.sh` and resume.
+- External SD validation must set `PYTHONPATH=/home/pi/code/nereus-vision-dev/device/system_agent/src` when running `device/tools/test_external_media_storage.py` from the repo root.
+- BME280 reporting requires health monitoring on; the generated env sets `ENABLE_SYSTEM_HEALTH_MONITORING=true`.

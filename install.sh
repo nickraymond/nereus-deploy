@@ -481,6 +481,14 @@ install_tailscale_if_requested() {
   wait_for_apt_lock 300
   curl -fsSL https://tailscale.com/install.sh | sh
   local cmd=(sudo tailscale up --hostname "${TAILSCALE_HOSTNAME}" --ssh)
+  echo
+  echo "=================================================================="
+  echo "[tailscale] authentication"
+  echo "=================================================================="
+  echo "The next command may print a login URL. Open it on your laptop and authenticate."
+  echo "If authentication succeeds but the command appears stuck, press Ctrl+C once,"
+  echo "then rerun ./install.sh and resume. Verify with: tailscale status"
+  echo
   log "[tailscale] running: ${cmd[*]}"
   "${cmd[@]}" || true
   if ! manual_checkpoint "[manual] Tailscale authentication" "tailscale_auth.md"; then
@@ -702,7 +710,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.3"
+  save_state_var "INSTALLER_VERSION" "4.4"
 
   require_sudo
   check_platform
