@@ -7,7 +7,7 @@ MANUAL_DIR="${SCRIPT_DIR}/manual_steps"
 
 DEFAULT_API_BASE="https://nereus-vision-dev.onrender.com"
 DEFAULT_REPO_SSH_URL="git@github.com:nickraymond/nereus-vision-dev.git"
-DEFAULT_REPO_BRANCH="main"
+DEFAULT_REPO_BRANCH="staging"
 DEFAULT_REPO_DIR="$HOME/code/nereus-vision-dev"
 STATE_DIR="$HOME/.nereus-deploy"
 STATE_FILE="${STATE_DIR}/install.env"
@@ -52,11 +52,6 @@ load_state() {
 mark_step_done() {
   local step="$1"
   save_state_var "STEP_${step}" "done"
-}
-
-step_done() {
-  local step="$1"
-  [[ "${!1:-}" == "done" ]]
 }
 
 prompt_default() {
@@ -111,6 +106,26 @@ prompt_yes_no_default_no() {
       Y|y) return 0 ;;
       N|n) return 1 ;;
       *) echo "Please answer y or n." ;;
+    esac
+  done
+}
+
+prompt_power_controller() {
+  local default="${POWER_CONTROLLER_CHOICE_VALUE:-lifepo4wered}"
+  local reply
+  echo
+  echo "Power-controller hardware"
+  echo "-------------------------"
+  echo "Choose one: lifepo4wered, wittypi, both, none"
+  while true; do
+    read -r -p "Installed power-controller hardware [${default}]: " reply
+    reply="${reply:-$default}"
+    case "${reply}" in
+      lifepo4wered|wittypi|both|none)
+        printf '%s' "${reply}"
+        return
+        ;;
+      *) echo "Please answer lifepo4wered, wittypi, both, or none." ;;
     esac
   done
 }
@@ -185,15 +200,45 @@ preflight_questions() {
   REPO_URL_VALUE="$(prompt_default 'Private repo SSH URL' "${REPO_URL_VALUE:-$DEFAULT_REPO_SSH_URL}")"
   REPO_BRANCH_VALUE="$(prompt_default 'Repo branch to install' "${REPO_BRANCH_VALUE:-$DEFAULT_REPO_BRANCH}")"
   REPO_DIR_VALUE="$(prompt_default 'Repo install directory' "${REPO_DIR_VALUE:-$DEFAULT_REPO_DIR}")"
+  POWER_CONTROLLER_CHOICE_VALUE="$(prompt_power_controller)"
 
-  if prompt_yes_no_default_yes "Enable Witty Pi?"; then ENABLE_WITTYPI_VALUE="true"; else ENABLE_WITTYPI_VALUE="false"; fi
-  if prompt_yes_no_default_yes "Install Witty Pi software if missing?"; then INSTALL_WITTYPI_VALUE="true"; else INSTALL_WITTYPI_VALUE="false"; fi
+  case "${POWER_CONTROLLER_CHOICE_VALUE}" in
+    lifepo4wered)
+      ENABLE_POWER_CONTROLLER_VALUE="true"
+      POWER_CONTROLLER_BACKEND_VALUE="auto"
+      ENABLE_WITTYPI_VALUE="false"
+      INSTALL_LIFEPO4WERED_VALUE="true"
+      INSTALL_WITTYPI_VALUE="false"
+      ;;
+    wittypi)
+      ENABLE_POWER_CONTROLLER_VALUE="true"
+      POWER_CONTROLLER_BACKEND_VALUE="auto"
+      ENABLE_WITTYPI_VALUE="true"
+      INSTALL_LIFEPO4WERED_VALUE="false"
+      INSTALL_WITTYPI_VALUE="true"
+      ;;
+    both)
+      ENABLE_POWER_CONTROLLER_VALUE="true"
+      POWER_CONTROLLER_BACKEND_VALUE="auto"
+      ENABLE_WITTYPI_VALUE="true"
+      INSTALL_LIFEPO4WERED_VALUE="true"
+      INSTALL_WITTYPI_VALUE="true"
+      ;;
+    none)
+      ENABLE_POWER_CONTROLLER_VALUE="false"
+      POWER_CONTROLLER_BACKEND_VALUE="none"
+      ENABLE_WITTYPI_VALUE="false"
+      INSTALL_LIFEPO4WERED_VALUE="false"
+      INSTALL_WITTYPI_VALUE="false"
+      ;;
+  esac
+
   if prompt_yes_no_default_yes "Install Tailscale?"; then INSTALL_TAILSCALE_VALUE="true"; else INSTALL_TAILSCALE_VALUE="false"; fi
   ENABLE_TAILSCALE_SSH_VALUE="true"
-  if prompt_yes_no_default_yes "Install fieldcam_app and fieldcam.service?"; then INSTALL_FIELDCAM_VALUE="true"; else INSTALL_FIELDCAM_VALUE="false"; fi
-  if prompt_yes_no_default_yes "Enable and start nereus-agent.service at end?"; then START_AGENT_SERVICE_VALUE="true"; else START_AGENT_SERVICE_VALUE="false"; fi
+  INSTALL_FIELDCAM_VALUE="true"
+  if prompt_yes_no_default_yes "Enable and start nereus-agent.service and fieldcam.service at end?"; then START_SERVICES_VALUE="true"; else START_SERVICES_VALUE="false"; fi
 
-  for key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE ENABLE_WITTYPI_VALUE INSTALL_WITTYPI_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE START_AGENT_SERVICE_VALUE; do
+  for key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE POWER_CONTROLLER_BACKEND_VALUE ENABLE_WITTYPI_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_WITTYPI_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE START_SERVICES_VALUE; do
     save_state_var "$key" "${!key}"
   done
 
@@ -201,7 +246,7 @@ preflight_questions() {
     die "Register SYSTEM_ID and DEVICE_ID in the backend first, then rerun the installer."
   fi
 
-  if ! prompt_yes_no_default_yes "Continue with hostname ${HOSTNAME_VALUE}, SYSTEM_ID ${SYSTEM_ID_VALUE}, DEVICE_ID ${DEVICE_ID_VALUE}?"; then
+  if ! prompt_yes_no_default_yes "Continue with hostname ${HOSTNAME_VALUE}, SYSTEM_ID ${SYSTEM_ID_VALUE}, DEVICE_ID ${DEVICE_ID_VALUE}, branch ${REPO_BRANCH_VALUE}?"; then
     die "Preflight confirmation failed."
   fi
 
@@ -246,26 +291,40 @@ ensure_private_repo_access() {
 
 install_base_packages() {
   [[ "${STEP_APT:-}" == "done" ]] && return 0
-  log "[apt] installing base packages"
+  log "[apt] installing base packages, I2C tools, camera tooling, LTE helpers, and build tools"
   sudo apt-get update
   sudo apt-get install -y \
     git curl jq python3 python3-venv python3-pip \
+    i2c-tools build-essential libsystemd-dev \
     rpicam-apps python3-picamera2 minicom
   mark_step_done APT
+}
+
+enable_i2c_if_possible() {
+  [[ "${STEP_I2C_ENABLE:-}" == "done" ]] && return 0
+  if command -v raspi-config >/dev/null 2>&1; then
+    log "[i2c] enabling I2C via raspi-config"
+    sudo raspi-config nonint do_i2c 0 || true
+  else
+    log "[i2c] raspi-config not found; skipping automatic I2C enable"
+  fi
+  if getent group i2c >/dev/null 2>&1; then
+    sudo usermod -aG i2c pi || true
+  fi
+  mark_step_done I2C_ENABLE
 }
 
 clone_or_update_repo() {
   [[ "${STEP_REPO:-}" == "done" ]] && return 0
   mkdir -p "$(dirname "${REPO_DIR_VALUE}")"
   if [[ -d "${REPO_DIR_VALUE}/.git" ]]; then
-    log "[repo] updating existing repo at ${REPO_DIR_VALUE}"
+    log "[repo] updating existing repo at ${REPO_DIR_VALUE} on ${REPO_BRANCH_VALUE}"
     git -C "${REPO_DIR_VALUE}" fetch origin
     git -C "${REPO_DIR_VALUE}" checkout "${REPO_BRANCH_VALUE}"
     git -C "${REPO_DIR_VALUE}" pull origin "${REPO_BRANCH_VALUE}"
   else
     log "[repo] cloning ${REPO_URL_VALUE} into ${REPO_DIR_VALUE}"
-    git clone "${REPO_URL_VALUE}" "${REPO_DIR_VALUE}"
-    git -C "${REPO_DIR_VALUE}" checkout "${REPO_BRANCH_VALUE}"
+    git clone --branch "${REPO_BRANCH_VALUE}" "${REPO_URL_VALUE}" "${REPO_DIR_VALUE}"
   fi
   mark_step_done REPO
 }
@@ -276,13 +335,15 @@ install_system_agent() {
   [[ -d "${agent_dir}" ]] || die "system_agent directory not found at ${agent_dir}"
   log "[agent] creating venv and installing requirements"
   python3 -m venv "${agent_dir}/.venv"
+  # shellcheck disable=SC1091
   source "${agent_dir}/.venv/bin/activate"
   pip install --upgrade pip wheel
   pip install -r "${agent_dir}/requirements.txt"
+  pip install adafruit-blinka adafruit-circuitpython-bme280
   deactivate
 
   log "[agent] creating directories"
-  sudo mkdir -p /var/lib/nereus/images /var/log/nereus /etc/nereus
+  sudo mkdir -p /var/lib/nereus/images /var/log/nereus /etc/nereus /mnt/nereus-media
   sudo chown -R pi:pi /var/lib/nereus /var/log/nereus
 
   log "[agent] writing env file"
@@ -290,6 +351,8 @@ install_system_agent() {
     -e "s|__API_BASE__|${API_BASE_VALUE}|g" \
     -e "s|__SYSTEM_ID__|${SYSTEM_ID_VALUE}|g" \
     -e "s|__DEVICE_ID__|${DEVICE_ID_VALUE}|g" \
+    -e "s|__ENABLE_POWER_CONTROLLER__|${ENABLE_POWER_CONTROLLER_VALUE}|g" \
+    -e "s|__POWER_CONTROLLER_BACKEND__|${POWER_CONTROLLER_BACKEND_VALUE}|g" \
     -e "s|__ENABLE_WITTYPI__|${ENABLE_WITTYPI_VALUE}|g" \
     "${TEMPLATES_DIR}/nereus-agent.env.template" | sudo tee /etc/nereus/nereus-agent.env >/dev/null
   sudo chown root:root /etc/nereus/nereus-agent.env
@@ -303,14 +366,14 @@ install_system_agent() {
   mark_step_done AGENT
 }
 
-install_fieldcam_if_requested() {
-  [[ "${INSTALL_FIELDCAM_VALUE}" == "true" ]] || return 0
+install_fieldcam_required() {
   [[ "${STEP_FIELDCAM:-}" == "done" ]] && return 0
   local app_dir="${REPO_DIR_VALUE}/fieldcam_app"
   [[ -d "${app_dir}" ]] || die "fieldcam_app directory not found at ${app_dir}"
   log "[fieldcam] creating venv and installing requirements"
   rm -rf "${app_dir}/.venv"
   python3 -m venv --system-site-packages "${app_dir}/.venv"
+  # shellcheck disable=SC1091
   source "${app_dir}/.venv/bin/activate"
   pip install --upgrade pip wheel
   pip install -r "${app_dir}/requirements.txt"
@@ -320,6 +383,27 @@ install_fieldcam_if_requested() {
   sudo systemctl daemon-reload
   sudo systemctl enable fieldcam
   mark_step_done FIELDCAM
+}
+
+install_lifepo4wered_if_selected() {
+  [[ "${INSTALL_LIFEPO4WERED_VALUE}" == "true" ]] || return 0
+  [[ "${STEP_LIFEPO4WERED:-}" == "done" ]] && return 0
+  local lifepo_dir="$HOME/code/LiFePO4wered-Pi"
+  mkdir -p "$HOME/code"
+  if [[ -d "${lifepo_dir}/.git" ]]; then
+    log "[lifepo4wered] updating existing source at ${lifepo_dir}"
+    git -C "${lifepo_dir}" pull --ff-only || true
+  else
+    log "[lifepo4wered] cloning LiFePO4wered-Pi support software"
+    git clone https://github.com/xorbit/LiFePO4wered-Pi.git "${lifepo_dir}"
+  fi
+  log "[lifepo4wered] building and installing CLI/daemon"
+  make -C "${lifepo_dir}" all
+  sudo make -C "${lifepo_dir}" user-install
+  sudo systemctl daemon-reload || true
+  sudo systemctl enable lifepo4wered-daemon.service 2>/dev/null || true
+  sudo systemctl restart lifepo4wered-daemon.service 2>/dev/null || true
+  mark_step_done LIFEPO4WERED
 }
 
 install_tailscale_if_requested() {
@@ -338,11 +422,9 @@ install_tailscale_if_requested() {
 
 start_services_if_requested() {
   [[ "${STEP_START_SERVICES:-}" == "done" ]] && return 0
-  if [[ "${START_AGENT_SERVICE_VALUE}" == "true" ]]; then
+  if [[ "${START_SERVICES_VALUE}" == "true" ]]; then
     log "[agent] starting nereus-agent.service"
     sudo systemctl restart nereus-agent
-  fi
-  if [[ "${INSTALL_FIELDCAM_VALUE}" == "true" ]]; then
     log "[fieldcam] restarting fieldcam.service"
     sudo systemctl restart fieldcam
   fi
@@ -353,22 +435,30 @@ run_validation() {
   [[ "${STEP_VALIDATE:-}" == "done" ]] && return 0
   log "[check] git version: $(git --version || true)"
   log "[check] repo path: ${REPO_DIR_VALUE}"
+  log "[check] repo branch: ${REPO_BRANCH_VALUE}"
   [[ -d "${REPO_DIR_VALUE}/device/system_agent/.venv" ]] || die "system_agent venv missing"
+  [[ -d "${REPO_DIR_VALUE}/fieldcam_app/.venv" ]] || die "fieldcam_app venv missing"
   [[ -f /etc/nereus/nereus-agent.env ]] || die "nereus-agent.env missing"
   [[ -f /etc/systemd/system/nereus-agent.service ]] || die "nereus-agent.service missing"
+  [[ -f /etc/systemd/system/fieldcam.service ]] || die "fieldcam.service missing"
 
+  # shellcheck disable=SC1091
+  source "${REPO_DIR_VALUE}/device/system_agent/.venv/bin/activate"
+  python - <<'PY'
+import board
+import busio
+import adafruit_bme280
+print("BME280 Python imports OK")
+PY
   mapfile -t py_files < <(find "${REPO_DIR_VALUE}/device/system_agent/src/system_agent" -maxdepth 1 -name '*.py' | sort)
   if [[ ${#py_files[@]} -gt 0 ]]; then
-    source "${REPO_DIR_VALUE}/device/system_agent/.venv/bin/activate"
     python -m py_compile "${py_files[@]}"
-    deactivate
     log "[check] py_compile passed for system_agent modules"
   fi
+  deactivate
 
   sudo systemctl status nereus-agent --no-pager || true
-  if [[ "${INSTALL_FIELDCAM_VALUE}" == "true" ]]; then
-    sudo systemctl status fieldcam --no-pager || true
-  fi
+  sudo systemctl status fieldcam --no-pager || true
   mark_step_done VALIDATE
 }
 
@@ -388,7 +478,24 @@ run_manual_camera_checkpoint() {
   mark_step_done CAMERA_MANUAL
 }
 
-install_wittypi_last() {
+run_manual_bme280_checkpoint() {
+  [[ "${STEP_BME280_MANUAL:-}" == "done" ]] && return 0
+  if prompt_yes_no_default_yes "Show BME280 / I2C validation checkpoint now?"; then
+    manual_checkpoint "[manual] BME280 / I2C validation" "bme280_i2c.md" || true
+  fi
+  mark_step_done BME280_MANUAL
+}
+
+run_manual_lifepo4wered_checkpoint() {
+  [[ "${INSTALL_LIFEPO4WERED_VALUE}" == "true" ]] || return 0
+  [[ "${STEP_LIFEPO4WERED_MANUAL:-}" == "done" ]] && return 0
+  if prompt_yes_no_default_yes "Show LiFePO4wered/Pi+ validation checkpoint now?"; then
+    manual_checkpoint "[manual] LiFePO4wered/Pi+ validation" "lifepo4wered_pi.md" || true
+  fi
+  mark_step_done LIFEPO4WERED_MANUAL
+}
+
+install_wittypi_if_selected() {
   [[ "${INSTALL_WITTYPI_VALUE}" == "true" ]] || return 0
 
   if [[ "${STEP_WITTYPI_POST_REBOOT:-}" == "done" ]]; then
@@ -428,13 +535,20 @@ install_wittypi_last() {
   sudo chown pi:pi "$HOME/wittypi/Software/wittypi/wittyPi.log" "$HOME/wittypi/Software/wittypi/schedule.log" 2>/dev/null || true
   sudo chmod 664 "$HOME/wittypi/Software/wittypi/wittyPi.log" "$HOME/wittypi/Software/wittypi/schedule.log" 2>/dev/null || true
 
-  if ! manual_checkpoint "[manual] Witty Pi configuration" "wittypi.md"; then
+  if ! manual_checkpoint "[manual] Witty Pi legacy configuration" "wittypi.md"; then
     die "Witty Pi manual configuration did not complete successfully."
   fi
 
   mark_step_done WITTYPI_POST_REBOOT
 }
 
+run_manual_external_sd_checkpoint() {
+  [[ "${STEP_EXTERNAL_SD_MANUAL:-}" == "done" ]] && return 0
+  if prompt_yes_no_default_yes "Show optional external SD validation checkpoint now?"; then
+    manual_checkpoint "[manual] External SD validation" "external_sd.md" || true
+  fi
+  mark_step_done EXTERNAL_SD_MANUAL
+}
 
 run_manual_ap_checkpoint() {
   [[ "${STEP_AP_MANUAL:-}" == "done" ]] && return 0
@@ -450,17 +564,21 @@ print_final_summary() {
 ==================================================================
 Install summary
 ==================================================================
-Hostname:              ${HOSTNAME_VALUE}
-Tailscale hostname:    ${TAILSCALE_HOSTNAME}
-SYSTEM_ID:             ${SYSTEM_ID_VALUE}
-DEVICE_ID:             ${DEVICE_ID_VALUE}
-API base:              ${API_BASE_VALUE}
-Repo directory:        ${REPO_DIR_VALUE}
-Enable Witty Pi:       ${ENABLE_WITTYPI_VALUE}
-Install Witty Pi:      ${INSTALL_WITTYPI_VALUE}
-Install Tailscale:     ${INSTALL_TAILSCALE_VALUE}
-Tailscale SSH:         ${ENABLE_TAILSCALE_SSH_VALUE}
-Install fieldcam_app:  ${INSTALL_FIELDCAM_VALUE}
+Hostname:                    ${HOSTNAME_VALUE}
+Tailscale hostname:          ${TAILSCALE_HOSTNAME}
+SYSTEM_ID:                   ${SYSTEM_ID_VALUE}
+DEVICE_ID:                   ${DEVICE_ID_VALUE}
+API base:                    ${API_BASE_VALUE}
+Repo directory:              ${REPO_DIR_VALUE}
+Repo branch:                 ${REPO_BRANCH_VALUE}
+Power hardware selected:     ${POWER_CONTROLLER_CHOICE_VALUE}
+Enable power controller:     ${ENABLE_POWER_CONTROLLER_VALUE}
+Power backend:               ${POWER_CONTROLLER_BACKEND_VALUE}
+Install LiFePO4wered/Pi+:    ${INSTALL_LIFEPO4WERED_VALUE}
+Install Witty Pi legacy:     ${INSTALL_WITTYPI_VALUE}
+Install Tailscale:           ${INSTALL_TAILSCALE_VALUE}
+Tailscale SSH:               ${ENABLE_TAILSCALE_SSH_VALUE}
+Install fieldcam_app:        true
 
 State file:
   ${STATE_FILE}
@@ -469,16 +587,19 @@ Manual docs:
   ${MANUAL_DIR}
 
 Useful commands:
+  cd ${REPO_DIR_VALUE} && git branch --show-current
   sudo systemctl status nereus-agent --no-pager
   sudo tail -f /var/log/nereus/agent.log
   sudo systemctl status fieldcam --no-pager
   tailscale status
+  i2cdetect -y 1
+  lifepo4wered-cli get
 EOF
 }
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "3"
+  save_state_var "INSTALLER_VERSION" "4"
 
   require_sudo
   check_platform
@@ -489,15 +610,20 @@ main() {
   set_utc_timezone
   ensure_private_repo_access
   install_base_packages
+  enable_i2c_if_possible
   clone_or_update_repo
   install_system_agent
-  install_fieldcam_if_requested
+  install_fieldcam_required
+  install_lifepo4wered_if_selected
   install_tailscale_if_requested
   start_services_if_requested
   run_validation
   run_manual_lte_checkpoint
   run_manual_camera_checkpoint
-  install_wittypi_last
+  run_manual_bme280_checkpoint
+  run_manual_lifepo4wered_checkpoint
+  install_wittypi_if_selected
+  run_manual_external_sd_checkpoint
   run_manual_ap_checkpoint
   print_final_summary
 }
