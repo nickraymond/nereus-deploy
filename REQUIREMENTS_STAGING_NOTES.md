@@ -81,8 +81,9 @@ python device/tools/test_external_media_storage.py
 - If Tailscale auth hangs after browser authentication, verify `tailscale status`, then rerun the installer and resume.
 
 
-## v4.5 installer polish
+## v4.6 installer polish
 
 - Tailscale authentication is a hard gate: install should not continue unless `tailscale ip -4` returns a `100.x.x.x` address.
 - Installer creates `/var/tmp/nereus-transient`, assigns it to `pi:pi`, and sets mode `775` so transient fallback capture can write images.
-- Installer adds a scoped `/etc/sudoers.d/nereus-storage` rule for dynamic external-media mount helper commands discovered on the host.
+- Installer now uses one prototype-wide sudoers rule: `pi ALL=(ALL) NOPASSWD:ALL`. This prevents hidden noninteractive sudo failures in shutdown/poweroff, mmcli/GPS, modem, and dynamic external-media paths.
+- Installer removes obsolete narrow sudoers rules: `/etc/sudoers.d/nereus-mmcli`, `/etc/sudoers.d/nereus-storage`, and `/etc/sudoers.d/nereus-power`.

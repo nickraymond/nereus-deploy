@@ -1,6 +1,6 @@
 # nereus-deploy
 
-Version: v4.5 fresh-SD reliability patch
+Version: v4.6 prototype sudo reliability patch
 
 Public bootstrap installer for Nereus Vision Raspberry Pi camera devices.
 
@@ -19,7 +19,7 @@ This repo is intentionally safe to keep public: no secrets, no private SSH keys,
 - external-media support tools for exFAT/FAT32 cards
 - optional automated `wlan0` FieldCam access point
 
-The default application branch is `staging` because the camera software is still in active development. v4.5 keeps the normal LTE bring-up on the ModemManager/NetworkManager path; AT commands are debug-only.
+The default application branch is `staging` because the camera software is still in active development. v4.6 keeps the normal LTE bring-up on the ModemManager/NetworkManager path; AT commands are debug-only.
 
 ## Quick start
 
@@ -117,9 +117,11 @@ sudo systemctl restart fieldcam
 - `manual_steps/` — human-in-the-loop validation steps shown by the installer
 - `tools/watch_agent_logs.py` — optional Windows helper for streaming `/var/log/nereus/agent.log` over Tailscale SSH
 
-## Fresh-SD notes from v4.5
+## Fresh-SD notes from v4.6
 
 - Tailscale is now a hard gate: the installer only continues after `tailscale ip -4` returns a `100.x.x.x` address. If browser auth does not end with `Success.`, rerun `sudo tailscale up --ssh --hostname=<name>` and then resume the installer.
-- The installer creates `/var/tmp/nereus-transient`, sets it writable by `pi`, and installs scoped storage sudoers rules for dynamic external-media mounting.
+- The installer creates `/var/tmp/nereus-transient` and sets it writable by `pi`.
+- Prototype build setting: the installer enables `pi ALL=(ALL) NOPASSWD:ALL` in `/etc/sudoers.d/010-pi-nopasswd` because the agent uses noninteractive privileged commands for shutdown, modem/GPS, and dynamic storage mounting.
+- Older narrow sudoers rules (`nereus-mmcli`, `nereus-storage`, `nereus-power`) are removed because they are superseded by the prototype-wide rule.
 - External SD validation must set `PYTHONPATH=/home/pi/code/nereus-vision-dev/device/system_agent/src` when running `device/tools/test_external_media_storage.py` from the repo root.
 - BME280 reporting requires health monitoring on; the generated env sets `ENABLE_SYSTEM_HEALTH_MONITORING=true`.

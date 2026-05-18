@@ -207,6 +207,33 @@ maybe_resume_existing_state() {
 
 require_sudo() { sudo -v || die "sudo access is required"; }
 
+setup_prototype_passwordless_sudo() {
+  [[ "${STEP_PASSWORDLESS_SUDO:-}" == "done" ]] && return 0
+  log "[sudo] enabling prototype passwordless sudo for pi"
+  sudo tee /etc/sudoers.d/010-pi-nopasswd >/dev/null <<'EOF'
+pi ALL=(ALL) NOPASSWD:ALL
+EOF
+  sudo chown root:root /etc/sudoers.d/010-pi-nopasswd
+  sudo chmod 440 /etc/sudoers.d/010-pi-nopasswd
+
+  # Remove older narrow rules. The prototype-wide rule above supersedes these
+  # and avoids hidden noninteractive sudo failures as the agent evolves.
+  sudo rm -f /etc/sudoers.d/nereus-mmcli /etc/sudoers.d/nereus-storage /etc/sudoers.d/nereus-power
+
+  sudo visudo -c >/dev/null
+  sudo -n true || die "passwordless sudo validation failed"
+
+  if command -v shutdown >/dev/null 2>&1; then
+    sudo -n "$(command -v shutdown)" --help >/dev/null || die "shutdown sudo validation failed"
+  fi
+  if command -v poweroff >/dev/null 2>&1; then
+    sudo -n "$(command -v poweroff)" --help >/dev/null || die "poweroff sudo validation failed"
+  fi
+
+  log "[sudo] passwordless sudo OK; obsolete narrow sudoers rules removed"
+  mark_step_done PASSWORDLESS_SUDO
+}
+
 check_platform() {
   [[ -f /etc/os-release ]] || die "Cannot detect OS"
   if ! grep -qiE 'debian|raspbian|ubuntu' /etc/os-release; then
@@ -352,14 +379,8 @@ setup_lte_userland() {
   sudo udevadm trigger
   sleep 10
 
-  local mmcli_path
-  mmcli_path="$(command -v mmcli || true)"
-  if [[ -n "${mmcli_path}" ]]; then
-    log "[lte] installing sudoers rule for noninteractive mmcli access"
-    echo "pi ALL=(root) NOPASSWD: ${mmcli_path}" | sudo tee /etc/sudoers.d/nereus-mmcli >/dev/null
-    sudo chown root:root /etc/sudoers.d/nereus-mmcli
-    sudo chmod 440 /etc/sudoers.d/nereus-mmcli
-    sudo visudo -c >/dev/null
+  if command -v mmcli >/dev/null 2>&1; then
+    log "[lte] validating mmcli can run noninteractively"
     sudo -n mmcli -L || true
   else
     log "[lte] mmcli not found after install; LTE manual validation will catch this"
@@ -414,23 +435,8 @@ install_system_agent() {
   sudo chown -R pi:pi /var/lib/nereus /var/log/nereus /var/tmp/nereus-transient
   sudo chmod 775 /var/tmp/nereus-transient
 
-  log "[storage] installing sudoers rule for dynamic external-media mount helpers"
-  local storage_cmds=()
-  local storage_tool storage_path
-  for storage_tool in mount umount findmnt lsblk blkid; do
-    storage_path="$(command -v "${storage_tool}" || true)"
-    if [[ -n "${storage_path}" ]]; then
-      storage_cmds+=("${storage_path}")
-    fi
-  done
-  if [[ ${#storage_cmds[@]} -gt 0 ]]; then
-    local storage_cmds_csv
-    storage_cmds_csv="$(IFS=', '; echo "${storage_cmds[*]}")"
-    echo "pi ALL=(root) NOPASSWD: ${storage_cmds_csv}" | sudo tee /etc/sudoers.d/nereus-storage >/dev/null
-    sudo chown root:root /etc/sudoers.d/nereus-storage
-    sudo chmod 440 /etc/sudoers.d/nereus-storage
-    sudo visudo -c >/dev/null
-  fi
+  log "[storage] validating noninteractive access for storage helper commands"
+  sudo -n true || die "passwordless sudo is required for storage helpers"
 
   log "[agent] writing env file"
   sed \
@@ -740,8 +746,8 @@ Install fieldcam_app:        true
 Health monitoring:           true
 BME280 internal env:         true
 LTE / ModemManager:          installed/enabled
-mmcli sudo rule:             installed
-Storage sudo rule:           installed
+Prototype sudo mode:        pi NOPASSWD:ALL
+Obsolete sudoers rules:      removed if present
 External media storage:      enabled
 External media mount point:  /mnt/nereus-media
 Transient image dir:         /var/tmp/nereus-transient
@@ -769,9 +775,10 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.5"
+  save_state_var "INSTALLER_VERSION" "4.6"
 
   require_sudo
+  setup_prototype_passwordless_sudo
   check_platform
   check_network
 
