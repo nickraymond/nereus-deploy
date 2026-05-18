@@ -4,6 +4,23 @@ Goal: verify the external media card can be detected, mounted, read, and written
 
 The card does not need a specific label or name.
 
+## Transient fallback directory
+
+The installer creates the transient capture directory and makes it writable by the `pi` service user:
+
+```bash
+/var/tmp/nereus-transient
+```
+
+This prevents fallback captures from failing if external media is unavailable. A direct camera write test should pass:
+
+```bash
+rpicam-still -n -t 500 -o /var/tmp/nereus-transient/test.jpg
+ls -lh /var/tmp/nereus-transient/test.jpg
+rm /var/tmp/nereus-transient/test.jpg
+```
+
+
 ## 1. Show block devices
 
 ```bash

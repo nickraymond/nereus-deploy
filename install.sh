@@ -411,7 +411,26 @@ install_system_agent() {
 
   log "[agent] creating directories"
   sudo mkdir -p /var/lib/nereus/images /var/log/nereus/health /etc/nereus /mnt/nereus-media /var/tmp/nereus-transient
-  sudo chown -R pi:pi /var/lib/nereus /var/log/nereus
+  sudo chown -R pi:pi /var/lib/nereus /var/log/nereus /var/tmp/nereus-transient
+  sudo chmod 775 /var/tmp/nereus-transient
+
+  log "[storage] installing sudoers rule for dynamic external-media mount helpers"
+  local storage_cmds=()
+  local storage_tool storage_path
+  for storage_tool in mount umount findmnt lsblk blkid; do
+    storage_path="$(command -v "${storage_tool}" || true)"
+    if [[ -n "${storage_path}" ]]; then
+      storage_cmds+=("${storage_path}")
+    fi
+  done
+  if [[ ${#storage_cmds[@]} -gt 0 ]]; then
+    local storage_cmds_csv
+    storage_cmds_csv="$(IFS=', '; echo "${storage_cmds[*]}")"
+    echo "pi ALL=(root) NOPASSWD: ${storage_cmds_csv}" | sudo tee /etc/sudoers.d/nereus-storage >/dev/null
+    sudo chown root:root /etc/sudoers.d/nereus-storage
+    sudo chmod 440 /etc/sudoers.d/nereus-storage
+    sudo visudo -c >/dev/null
+  fi
 
   log "[agent] writing env file"
   sed \
@@ -474,26 +493,64 @@ install_lifepo4wered_if_selected() {
   mark_step_done LIFEPO4WERED
 }
 
+verify_tailscale_authenticated() {
+  local ip status_output
+  ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  status_output="$(tailscale status 2>&1 || true)"
+
+  if [[ "${ip}" =~ ^100\. ]]; then
+    log "[tailscale] authenticated; tailscale_ip=${ip}"
+    return 0
+  fi
+
+  echo
+  echo "=================================================================="
+  echo "[tailscale] authentication not complete"
+  echo "=================================================================="
+  echo "Tailscale did not return a 100.x IP, so the installer will stop here."
+  echo
+  echo "Current tailscale status:"
+  echo "${status_output}"
+  echo
+  echo "Recovery:"
+  echo "  sudo tailscale up --ssh --hostname=${TAILSCALE_HOSTNAME}"
+  echo
+  echo "Wait for the terminal to print 'Success.' after browser authentication."
+  echo "Then verify:"
+  echo "  tailscale status"
+  echo "  tailscale ip -4"
+  echo
+  echo "After tailscale ip -4 returns a 100.x address, rerun:"
+  echo "  cd ${SCRIPT_DIR}"
+  echo "  ./install.sh"
+  echo "and resume the saved install state."
+  echo
+  return 1
+}
+
 install_tailscale_if_requested() {
   [[ "${INSTALL_TAILSCALE_VALUE}" == "true" ]] || return 0
   [[ "${STEP_TAILSCALE:-}" == "done" ]] && return 0
   log "[tailscale] installing tailscale"
   wait_for_apt_lock 300
   curl -fsSL https://tailscale.com/install.sh | sh
+  sudo systemctl enable --now tailscaled || true
+
   local cmd=(sudo tailscale up --hostname "${TAILSCALE_HOSTNAME}" --ssh)
   echo
   echo "=================================================================="
   echo "[tailscale] authentication"
   echo "=================================================================="
   echo "The next command may print a login URL. Open it on your laptop and authenticate."
-  echo "If authentication succeeds but the command appears stuck, press Ctrl+C once,"
-  echo "then rerun ./install.sh and resume. Verify with: tailscale status"
+  echo "Do not continue until the Pi terminal prints: Success."
   echo
   log "[tailscale] running: ${cmd[*]}"
   "${cmd[@]}" || true
-  if ! manual_checkpoint "[manual] Tailscale authentication" "tailscale_auth.md"; then
-    die "Tailscale authentication did not complete successfully."
+
+  if ! verify_tailscale_authenticated; then
+    die "Tailscale authentication did not complete; rerun the installer after Tailscale is authenticated."
   fi
+
   mark_step_done TAILSCALE
 }
 
@@ -684,8 +741,10 @@ Health monitoring:           true
 BME280 internal env:         true
 LTE / ModemManager:          installed/enabled
 mmcli sudo rule:             installed
+Storage sudo rule:           installed
 External media storage:      enabled
 External media mount point:  /mnt/nereus-media
+Transient image dir:         /var/tmp/nereus-transient
 Field AP SSID:               ${FIELD_AP_SSID:-NEREUS ${SYSTEM_ID_VALUE}}
 
 State file:
@@ -710,7 +769,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.4"
+  save_state_var "INSTALLER_VERSION" "4.5"
 
   require_sudo
   check_platform

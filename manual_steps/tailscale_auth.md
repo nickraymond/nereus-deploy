@@ -14,7 +14,7 @@ If Tailscale prints a login URL:
 2. Authenticate the Pi.
 3. Return to the Pi terminal.
 
-If authentication succeeds but the installer appears stuck at the login URL, press `Ctrl+C` once. Then verify:
+The installer should only continue after authentication is complete. The Pi terminal should print `Success.` and `tailscale ip -4` should return a `100.x.x.x` address. Verify with:
 
 ```bash
 tailscale status
@@ -28,7 +28,7 @@ Expected:
 - your laptop appears
 - the Pi has a `100.x.x.x` Tailscale IP
 
-If that looks good, rerun the installer and resume the previous state:
+If the installer stops because Tailscale is still `NeedsLogin` or `Logged out`, run `sudo tailscale up --ssh --hostname <name>` again. Once `tailscale ip -4` returns a `100.x.x.x` address, rerun the installer and resume the previous state:
 
 ```bash
 cd ~/nereus-deploy
