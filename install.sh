@@ -145,26 +145,6 @@ prompt_yes_no_default_no() {
   done
 }
 
-prompt_power_controller() {
-  local default="${POWER_CONTROLLER_CHOICE_VALUE:-lifepo4wered}"
-  local reply
-  echo >&2
-  echo "Power-controller hardware" >&2
-  echo "-------------------------" >&2
-  echo "Choose one: lifepo4wered, wittypi, both, none" >&2
-  while true; do
-    read -r -p "Installed power-controller hardware [${default}]: " reply
-    reply="${reply:-$default}"
-    case "${reply}" in
-      lifepo4wered|wittypi|both|none)
-        printf '%s' "${reply}"
-        return
-        ;;
-      *) echo "Please answer lifepo4wered, wittypi, both, or none." >&2 ;;
-    esac
-  done
-}
-
 manual_checkpoint() {
   local title="$1"
   local file="$2"
@@ -262,38 +242,9 @@ preflight_questions() {
   REPO_URL_VALUE="$(prompt_default 'Private repo SSH URL' "${REPO_URL_VALUE:-$DEFAULT_REPO_SSH_URL}")"
   REPO_BRANCH_VALUE="$(prompt_default 'Repo branch to install' "${REPO_BRANCH_VALUE:-$DEFAULT_REPO_BRANCH}")"
   REPO_DIR_VALUE="$(prompt_default 'Repo install directory' "${REPO_DIR_VALUE:-$DEFAULT_REPO_DIR}")"
-  POWER_CONTROLLER_CHOICE_VALUE="$(prompt_power_controller)"
-
-  case "${POWER_CONTROLLER_CHOICE_VALUE}" in
-    lifepo4wered)
-      ENABLE_POWER_CONTROLLER_VALUE="true"
-      POWER_CONTROLLER_BACKEND_VALUE="auto"
-      ENABLE_WITTYPI_VALUE="false"
-      INSTALL_LIFEPO4WERED_VALUE="true"
-      INSTALL_WITTYPI_VALUE="false"
-      ;;
-    wittypi)
-      ENABLE_POWER_CONTROLLER_VALUE="true"
-      POWER_CONTROLLER_BACKEND_VALUE="auto"
-      ENABLE_WITTYPI_VALUE="true"
-      INSTALL_LIFEPO4WERED_VALUE="false"
-      INSTALL_WITTYPI_VALUE="true"
-      ;;
-    both)
-      ENABLE_POWER_CONTROLLER_VALUE="true"
-      POWER_CONTROLLER_BACKEND_VALUE="auto"
-      ENABLE_WITTYPI_VALUE="true"
-      INSTALL_LIFEPO4WERED_VALUE="true"
-      INSTALL_WITTYPI_VALUE="true"
-      ;;
-    none)
-      ENABLE_POWER_CONTROLLER_VALUE="false"
-      POWER_CONTROLLER_BACKEND_VALUE="none"
-      ENABLE_WITTYPI_VALUE="false"
-      INSTALL_LIFEPO4WERED_VALUE="false"
-      INSTALL_WITTYPI_VALUE="false"
-      ;;
-  esac
+  POWER_CONTROLLER_CHOICE_VALUE="lifepo4wered"
+  ENABLE_POWER_CONTROLLER_VALUE="true"
+  INSTALL_LIFEPO4WERED_VALUE="true"
 
   if prompt_yes_no_default_yes "Install Tailscale?"; then INSTALL_TAILSCALE_VALUE="true"; else INSTALL_TAILSCALE_VALUE="false"; fi
   ENABLE_TAILSCALE_SSH_VALUE="true"
@@ -302,7 +253,7 @@ preflight_questions() {
   if prompt_yes_no_default_yes "Enable and start nereus-agent.service and fieldcam.service at end?"; then START_SERVICES_VALUE="true"; else START_SERVICES_VALUE="false"; fi
 
   local state_key
-  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE POWER_CONTROLLER_BACKEND_VALUE ENABLE_WITTYPI_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_WITTYPI_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE CONFIGURE_AP_VALUE START_SERVICES_VALUE; do
+  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE CONFIGURE_AP_VALUE START_SERVICES_VALUE; do
     if [[ -z "${!state_key+x}" ]]; then
       die "Internal installer error: expected ${state_key} to be set during preflight."
     fi
@@ -445,9 +396,12 @@ install_system_agent() {
     -e "s|__DEVICE_ID__|${DEVICE_ID_VALUE}|g" \
     -e "s|__SYSTEM_CONFIG_CACHE_PATH__|/var/lib/nereus/system_config_cache_${SYSTEM_ID_VALUE}.json|g" \
     -e "s|__ENABLE_POWER_CONTROLLER__|${ENABLE_POWER_CONTROLLER_VALUE}|g" \
-    -e "s|__POWER_CONTROLLER_BACKEND__|${POWER_CONTROLLER_BACKEND_VALUE}|g" \
-    -e "s|__ENABLE_WITTYPI__|${ENABLE_WITTYPI_VALUE}|g" \
-    "${TEMPLATES_DIR}/nereus-agent.env.template" | sudo tee /etc/nereus/nereus-agent.env >/dev/null
+    "${TEMPLATES_DIR}/nereus-agent.env.template" \
+    | grep -Ev '^(ENABLE_WITTYPI|ALLOW_WITTYPI_FALLBACK|INSTALL_WITTYPI|POWER_CONTROLLER_BACKEND|WITTYPI_SCHEDULE_STATE_PATH)=' \
+    | sudo tee /etc/nereus/nereus-agent.env >/dev/null
+
+  log "[agent] removing obsolete power-controller env vars from local env"
+  sudo sed -i '/^ENABLE_WITTYPI=/d;/^ALLOW_WITTYPI_FALLBACK=/d;/^INSTALL_WITTYPI=/d;/^POWER_CONTROLLER_BACKEND=/d;/^WITTYPI_SCHEDULE_STATE_PATH=/d' /etc/nereus/nereus-agent.env
   sudo chown root:root /etc/nereus/nereus-agent.env
   sudo chmod 600 /etc/nereus/nereus-agent.env
 
@@ -659,53 +613,6 @@ run_manual_lifepo4wered_checkpoint() {
   mark_step_done LIFEPO4WERED_MANUAL
 }
 
-install_wittypi_if_selected() {
-  [[ "${INSTALL_WITTYPI_VALUE}" == "true" ]] || return 0
-
-  if [[ "${STEP_WITTYPI_POST_REBOOT:-}" == "done" ]]; then
-    return 0
-  fi
-
-  if [[ "${STEP_WITTYPI_INSTALL:-}" != "done" ]]; then
-    if [[ ! -d "$HOME/wittypi/.git" ]]; then
-      log "[wittypi] cloning Witty Pi software"
-      git clone https://github.com/uugear/Witty-Pi-4.git "$HOME/wittypi"
-    else
-      log "[wittypi] Witty Pi repo already present"
-    fi
-    [[ -f "$HOME/wittypi/Software/wittypi/utilities.sh" ]] || die "Expected Witty Pi files not found after clone"
-
-    log "[wittypi] running installer last so reboot happens at the end"
-    (cd "$HOME/wittypi/Software" && sudo ./install.sh)
-
-    save_state_var "PENDING_REBOOT" "true"
-    mark_step_done WITTYPI_INSTALL
-
-    echo
-    echo "=================================================================="
-    echo "[wittypi] reboot required"
-    echo "=================================================================="
-    echo "Reboot now, then rerun ./install.sh."
-    echo "The installer will resume at the Witty Pi manual configuration step."
-    exit 0
-  fi
-
-  if [[ "${PENDING_REBOOT:-false}" == "true" ]]; then
-    log "[wittypi] resuming after reboot"
-    save_state_var "PENDING_REBOOT" "false"
-  fi
-
-  log "[wittypi] fixing Witty Pi log ownership"
-  sudo chown pi:pi "$HOME/wittypi/Software/wittypi/wittyPi.log" "$HOME/wittypi/Software/wittypi/schedule.log" 2>/dev/null || true
-  sudo chmod 664 "$HOME/wittypi/Software/wittypi/wittyPi.log" "$HOME/wittypi/Software/wittypi/schedule.log" 2>/dev/null || true
-
-  if ! manual_checkpoint "[manual] Witty Pi legacy configuration" "wittypi.md"; then
-    die "Witty Pi manual configuration did not complete successfully."
-  fi
-
-  mark_step_done WITTYPI_POST_REBOOT
-}
-
 run_manual_external_sd_checkpoint() {
   [[ "${STEP_EXTERNAL_SD_MANUAL:-}" == "done" ]] && return 0
   if prompt_yes_no_default_yes "Show optional external SD validation checkpoint now?"; then
@@ -735,11 +642,10 @@ DEVICE_ID:                   ${DEVICE_ID_VALUE}
 API base:                    ${API_BASE_VALUE}
 Repo directory:              ${REPO_DIR_VALUE}
 Repo branch:                 ${REPO_BRANCH_VALUE}
-Power hardware selected:     ${POWER_CONTROLLER_CHOICE_VALUE}
+Power hardware selected:     LiFePO4wered/Pi+
 Enable power controller:     ${ENABLE_POWER_CONTROLLER_VALUE}
-Power backend:               ${POWER_CONTROLLER_BACKEND_VALUE}
+Power backend:               lifepo4wered only
 Install LiFePO4wered/Pi+:    ${INSTALL_LIFEPO4WERED_VALUE}
-Install Witty Pi legacy:     ${INSTALL_WITTYPI_VALUE}
 Install Tailscale:           ${INSTALL_TAILSCALE_VALUE}
 Tailscale SSH:               ${ENABLE_TAILSCALE_SSH_VALUE}
 Install fieldcam_app:        true
@@ -775,7 +681,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.6"
+  save_state_var "INSTALLER_VERSION" "4.7"
 
   require_sudo
   setup_prototype_passwordless_sudo
@@ -801,7 +707,6 @@ main() {
   run_manual_camera_checkpoint
   run_manual_bme280_checkpoint
   run_manual_lifepo4wered_checkpoint
-  install_wittypi_if_selected
   run_manual_external_sd_checkpoint
   run_manual_ap_checkpoint
   print_final_summary
