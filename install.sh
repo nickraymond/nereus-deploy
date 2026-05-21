@@ -364,6 +364,36 @@ wait_for_modem() {
   return 1
 }
 
+
+print_lte_diagnostics() {
+  log "[lte] diagnostics: ModemManager / NetworkManager / USB state"
+  sudo -n mmcli -L || true
+  nmcli device status || true
+  lsusb || true
+  ip a || true
+  sudo journalctl -u ModemManager -n 80 --no-pager || true
+  sudo journalctl -u NetworkManager -n 80 --no-pager || true
+}
+
+require_modem_detected_for_lte_setup() {
+  local modem_id
+  modem_id="$(wait_for_modem "${1:-120}" || true)"
+  if [[ -z "${modem_id}" ]]; then
+    log "[lte] modem not detected by ModemManager; restarting services and retriggering udev once"
+    sudo systemctl restart ModemManager NetworkManager || true
+    sudo udevadm trigger || true
+    sleep 15
+    modem_id="$(wait_for_modem 60 || true)"
+  fi
+
+  if [[ -z "${modem_id}" ]]; then
+    print_lte_diagnostics
+    die "LTE modem not detected by ModemManager. Do not create/activate the nmcli LTE connection yet. Check Sixfab/Telit power, USB seating/mode, and run the manual LTE bring-up checkpoint."
+  fi
+
+  printf '%s' "${modem_id}"
+}
+
 wait_for_wwan0() {
   local max_wait_sec="${1:-90}"
   local waited=0
@@ -389,33 +419,40 @@ configure_lte_connection() {
   setup_lte_userland
 
   local modem_id
-  modem_id="$(wait_for_modem 90 || true)"
-  if [[ -z "${modem_id}" ]]; then
-    sudo -n mmcli -L || true
-    lsusb || true
-    log "[lte] modem not visible after waiting; retriggering udev and restarting ModemManager once"
-    sudo udevadm trigger || true
-    sudo systemctl restart ModemManager NetworkManager || true
-    sleep 15
-    modem_id="$(wait_for_modem 60 || true)"
-  fi
-  [[ -n "${modem_id}" ]] || die "LTE modem not found. Check Sixfab/Telit USB mode, power, and hardware seating before LTE validation."
+  modem_id="$(require_modem_detected_for_lte_setup 120)"
+  log "[lte] modem detected by ModemManager modem_id=${modem_id}"
+  sudo -n mmcli -m "${modem_id}" || true
 
   sudo nmcli radio wwan on || true
+
+  # Match the previously proven manual bring-up flow: use the modem/QMI
+  # control interface when it exists instead of binding a GSM profile to any
+  # arbitrary device. Using '*' can make NetworkManager report unrelated
+  # devices such as wlan0 as unsuitable, which is confusing during bring-up.
+  local lte_ifname="cdc-wdm0"
+  if [[ ! -e "/dev/${lte_ifname}" && ! -e "/sys/class/net/${lte_ifname}" ]]; then
+    log "[lte] WARNING ${lte_ifname} not visible; falling back to ifname '*' for nmcli GSM profile"
+    lte_ifname="*"
+  fi
+
   if nmcli -t -f NAME connection show | grep -qx 'lte'; then
-    log "[lte] existing nmcli connection 'lte' found; updating APN/autoconnect"
-    sudo nmcli connection modify lte gsm.apn "${LTE_APN_VALUE}" connection.autoconnect yes
+    log "[lte] existing nmcli connection 'lte' found; updating APN/autoconnect/ifname=${lte_ifname}"
+    sudo nmcli connection modify lte gsm.apn "${LTE_APN_VALUE}" connection.autoconnect yes connection.interface-name "${lte_ifname}" || true
   else
-    log "[lte] creating nmcli GSM connection 'lte'"
-    sudo nmcli connection add type gsm ifname "*" con-name lte apn "${LTE_APN_VALUE}"
+    log "[lte] creating nmcli GSM connection 'lte' ifname=${lte_ifname}"
+    sudo nmcli connection add type gsm ifname "${lte_ifname}" con-name lte apn "${LTE_APN_VALUE}"
     sudo nmcli connection modify lte connection.autoconnect yes
   fi
 
-  sudo nmcli connection up lte || true
+  log "[lte] activating nmcli connection 'lte'"
+  if ! sudo nmcli --wait 60 connection up lte; then
+    print_lte_diagnostics
+    die "LTE NetworkManager connection activation failed. Modem was detected, but LTE data interface did not come up. Check APN, SIM, antenna, and modem registration."
+  fi
+
   if ! wait_for_wwan0 90; then
-    nmcli device status || true
+    print_lte_diagnostics
     sudo -n mmcli -m "${modem_id}" || true
-    ip a || true
     die "wwan0 did not appear after LTE connection setup"
   fi
 
@@ -953,7 +990,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "5.0"
+  save_state_var "INSTALLER_VERSION" "5.1"
 
   require_sudo
   setup_prototype_passwordless_sudo
@@ -966,7 +1003,6 @@ main() {
   ensure_private_repo_access
   install_base_packages
   setup_lte_userland
-  configure_lte_connection
   collect_lte_identity
   enable_i2c_if_possible
   clone_or_update_repo
@@ -975,12 +1011,12 @@ main() {
   install_system_agent
   install_fieldcam_required
   install_tailscale_if_requested
+  run_manual_lte_checkpoint
   verify_lte_end_to_end
   verify_gps_alive_nonblocking
   configure_field_ap_if_requested
   start_services_if_requested
   run_validation
-  run_manual_lte_checkpoint
   run_manual_camera_checkpoint
   run_manual_bme280_checkpoint
   run_manual_lifepo4wered_checkpoint

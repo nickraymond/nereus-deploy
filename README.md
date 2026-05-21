@@ -1,6 +1,6 @@
 # nereus-deploy
 
-Version: v4.9 production installer hardening + LTE identity inventory
+Version: v5.1 production installer hardening + safe LTE bring-up sequencing
 
 Public bootstrap installer for Nereus Vision Raspberry Pi camera devices.
 
@@ -185,8 +185,16 @@ sudo cat /etc/nereus/device_identity.json
 ```
 
 
-## v5.0 note: LTE setup before wwan0 validation
 
-The installer now creates/updates the NetworkManager LTE connection named `lte` before running hard `wwan0` validation. The APN defaults to `iot0723.com.attz` and is stored in the installer resume state as `LTE_APN_VALUE`.
+## v5.1 note: safe LTE modem-first bring-up
 
-If a previous install attempt stopped after Tailscale authentication because `wwan0` was missing, rerun `./install.sh`, choose to resume previous state, and the installer should continue into LTE connection setup before validating `wwan0`.
+The installer now returns to the proven LTE bring-up sequence:
+
+1. install/enable ModemManager + NetworkManager + QMI helpers
+2. restart ModemManager/NetworkManager and trigger udev
+3. wait for the Telit/Sixfab modem to appear in `mmcli -L`
+4. only then create/update the NetworkManager `lte` profile
+5. prefer `ifname cdc-wdm0` when present, matching the original manual flow
+6. activate `lte`, wait for `wwan0`, then run ping/curl validation
+
+If the modem is not visible to ModemManager, the installer fails before creating or activating the `lte` connection and prints USB/ModemManager/NetworkManager diagnostics. This prevents the confusing `No suitable device found ... wlan0` failure seen when NetworkManager is asked to activate LTE before any modem exists.
