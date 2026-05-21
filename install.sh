@@ -339,6 +339,182 @@ setup_lte_userland() {
   mark_step_done LTE_USERLAND
 }
 
+
+get_modem_id() {
+  sudo -n mmcli -L 2>/dev/null | sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' | head -n 1
+}
+
+collect_lte_identity() {
+  [[ "${STEP_LTE_IDENTITY:-}" == "done" ]] && return 0
+  log "[lte] collecting modem IMEI and SIM ICCID inventory data"
+
+  local modem_id modem_kv sim_path sim_id sim_kv imei iccid operator_id operator_name
+  modem_id="$(get_modem_id || true)"
+  if [[ -z "${modem_id}" ]]; then
+    log "[lte] no modem found; writing unknown IMEI/ICCID values"
+    MODEM_IMEI_VALUE="unknown"
+    SIM_ICCID_VALUE="unknown"
+    CELLULAR_OPERATOR_ID_VALUE="unknown"
+    CELLULAR_OPERATOR_NAME_VALUE="unknown"
+  else
+    modem_kv="$(sudo -n mmcli -m "${modem_id}" --output-keyvalue 2>/dev/null || true)"
+    imei="$(printf '%s\n' "${modem_kv}" | awk -F': ' '/modem\.generic\.equipment-identifier/ {print $2; exit}')"
+    sim_path="$(printf '%s\n' "${modem_kv}" | awk -F': ' '/modem\.generic\.sim/ {print $2; exit}')"
+    sim_id="$(basename "${sim_path:-}")"
+
+    if [[ -n "${sim_id}" && "${sim_id}" != "--" && "${sim_id}" != "unknown" ]]; then
+      sim_kv="$(sudo -n mmcli -i "${sim_id}" --output-keyvalue 2>/dev/null || true)"
+      iccid="$(printf '%s\n' "${sim_kv}" | awk -F': ' '/sim\.properties\.iccid/ {print $2; exit}')"
+      operator_id="$(printf '%s\n' "${sim_kv}" | awk -F': ' '/sim\.properties\.operator-identifier/ {print $2; exit}')"
+      operator_name="$(printf '%s\n' "${sim_kv}" | awk -F': ' '/sim\.properties\.operator-name/ {print $2; exit}')"
+    fi
+
+    MODEM_IMEI_VALUE="${imei:-unknown}"
+    SIM_ICCID_VALUE="${iccid:-unknown}"
+    CELLULAR_OPERATOR_ID_VALUE="${operator_id:-unknown}"
+    CELLULAR_OPERATOR_NAME_VALUE="${operator_name:-unknown}"
+  fi
+
+  save_state_var MODEM_IMEI_VALUE "${MODEM_IMEI_VALUE}"
+  save_state_var SIM_ICCID_VALUE "${SIM_ICCID_VALUE}"
+  save_state_var CELLULAR_OPERATOR_ID_VALUE "${CELLULAR_OPERATOR_ID_VALUE}"
+  save_state_var CELLULAR_OPERATOR_NAME_VALUE "${CELLULAR_OPERATOR_NAME_VALUE}"
+
+  log "[lte] IMEI=${MODEM_IMEI_VALUE} ICCID=${SIM_ICCID_VALUE} operator_id=${CELLULAR_OPERATOR_ID_VALUE} operator_name=${CELLULAR_OPERATOR_NAME_VALUE}"
+  mark_step_done LTE_IDENTITY
+}
+
+write_device_identity_file() {
+  [[ "${STEP_DEVICE_IDENTITY:-}" == "done" ]] && return 0
+  log "[identity] writing /etc/nereus/device_identity.json"
+  sudo mkdir -p /etc/nereus
+  python3 - "${SYSTEM_ID_VALUE}" "${DEVICE_ID_VALUE}" "${TAILSCALE_HOSTNAME}" "${MODEM_IMEI_VALUE:-unknown}" "${SIM_ICCID_VALUE:-unknown}" "${CELLULAR_OPERATOR_ID_VALUE:-unknown}" "${CELLULAR_OPERATOR_NAME_VALUE:-unknown}" <<'IDENTITYPY' | sudo tee /etc/nereus/device_identity.json >/dev/null
+import json
+import sys
+from datetime import datetime, timezone
+payload = {
+    "system_id": sys.argv[1],
+    "device_id": sys.argv[2],
+    "tailscale_hostname": sys.argv[3],
+    "modem_imei": sys.argv[4],
+    "sim_iccid": sys.argv[5],
+    "cellular_operator_id": sys.argv[6],
+    "cellular_operator_name": sys.argv[7],
+    "created_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+}
+print(json.dumps(payload, indent=2, sort_keys=True))
+IDENTITYPY
+  sudo chown root:root /etc/nereus/device_identity.json
+  sudo chmod 600 /etc/nereus/device_identity.json
+  mark_step_done DEVICE_IDENTITY
+}
+
+create_and_test_runtime_paths() {
+  [[ "${STEP_RUNTIME_PATHS:-}" == "done" ]] && return 0
+  log "[paths] creating runtime/cache/fallback directories and running read/write/delete tests"
+
+  sudo mkdir -p \
+    /var/log/nereus/health \
+    /var/lib/nereus/cache \
+    /var/lib/nereus/offline \
+    /var/lib/nereus/images \
+    /var/tmp/nereus-transient \
+    /mnt/nereus-media/images
+
+  sudo chown -R pi:pi /var/log/nereus /var/lib/nereus /var/tmp/nereus-transient
+  sudo chmod 775 /var/tmp/nereus-transient
+
+  local dir test_file
+  for dir in \
+    /var/log/nereus \
+    /var/log/nereus/health \
+    /var/lib/nereus \
+    /var/lib/nereus/cache \
+    /var/lib/nereus/offline \
+    /var/lib/nereus/images \
+    /var/tmp/nereus-transient
+  do
+    test_file="${dir}/.nereus_write_test"
+    echo test > "${test_file}" || die "Runtime path not writable: ${dir}"
+    cat "${test_file}" >/dev/null || die "Runtime path not readable: ${dir}"
+    rm -f "${test_file}" || die "Runtime path cleanup failed: ${dir}"
+    log "[paths] OK writable ${dir}"
+  done
+
+  if mountpoint -q /mnt/nereus-media; then
+    sudo chown -R pi:pi /mnt/nereus-media || true
+    test_file="/mnt/nereus-media/images/.nereus_write_test"
+    if echo test > "${test_file}" && cat "${test_file}" >/dev/null && rm -f "${test_file}"; then
+      log "[paths] OK writable /mnt/nereus-media/images"
+    else
+      log "[paths] WARNING external media mounted but /mnt/nereus-media/images write test failed"
+    fi
+  else
+    log "[paths] external media not mounted; skipping external SD write test"
+  fi
+
+  mark_step_done RUNTIME_PATHS
+}
+
+verify_lifepo4wered_hard_gate() {
+  [[ "${STEP_LIFEPO4WERED_VERIFY:-}" == "done" ]] && return 0
+  log "[lifepo4wered] hard-gate verification"
+  command -v lifepo4wered-cli >/dev/null 2>&1 || die "lifepo4wered-cli not found"
+
+  local reg rtc_time old_wake test_wake readback auto_boot vbat vin
+  reg="$(lifepo4wered-cli get I2C_REG_VER 2>/dev/null || true)"
+  [[ "${reg}" =~ ^[0-9]+$ ]] || die "LiFePO4wered I2C_REG_VER read failed; got '${reg}'"
+
+  rtc_time="$(lifepo4wered-cli get RTC_TIME 2>/dev/null || true)"
+  [[ "${rtc_time}" =~ ^[0-9]+$ ]] || die "LiFePO4wered RTC_TIME read failed; got '${rtc_time}'"
+
+  old_wake="$(lifepo4wered-cli get RTC_WAKE_TIME 2>/dev/null || true)"
+  test_wake=$((rtc_time + 600))
+  lifepo4wered-cli set RTC_WAKE_TIME "${test_wake}" >/dev/null
+  readback="$(lifepo4wered-cli get RTC_WAKE_TIME 2>/dev/null || true)"
+  [[ "${readback}" == "${test_wake}" ]] || die "LiFePO4wered RTC_WAKE_TIME verify failed; requested=${test_wake} readback=${readback}"
+  if [[ "${old_wake}" =~ ^[0-9]+$ ]]; then
+    lifepo4wered-cli set RTC_WAKE_TIME "${old_wake}" >/dev/null || true
+  fi
+
+  lifepo4wered-cli set AUTO_BOOT 0 >/dev/null
+  auto_boot="$(lifepo4wered-cli get AUTO_BOOT 2>/dev/null || true)"
+  [[ "${auto_boot}" == "0" ]] || die "LiFePO4wered AUTO_BOOT verify failed; expected 0 got ${auto_boot}"
+
+  vbat="$(lifepo4wered-cli get VBAT 2>/dev/null || true)"
+  vin="$(lifepo4wered-cli get VIN 2>/dev/null || true)"
+  log "[lifepo4wered] OK I2C_REG_VER=${reg} RTC_TIME=${rtc_time} AUTO_BOOT=${auto_boot} VBAT=${vbat:-unknown} VIN=${vin:-unknown}"
+  mark_step_done LIFEPO4WERED_VERIFY
+}
+
+verify_lte_end_to_end() {
+  [[ "${STEP_LTE_E2E:-}" == "done" ]] && return 0
+  log "[lte] end-to-end wwan0 validation"
+  sudo -n mmcli -L || die "mmcli cannot list modem"
+  ip a show wwan0 || die "wwan0 interface missing"
+  ip route || true
+  ping -I wwan0 -c 3 -W 5 1.1.1.1 || die "wwan0 ping to 1.1.1.1 failed"
+  curl --interface wwan0 --max-time 20 "${API_BASE_VALUE}/" || die "wwan0 curl to API failed"
+  log "[lte] end-to-end validation OK"
+  mark_step_done LTE_E2E
+}
+
+verify_gps_alive_nonblocking() {
+  [[ "${STEP_GPS_ALIVE:-}" == "done" ]] && return 0
+  log "[gps] enabling and checking GPS raw/NMEA; fix is not required"
+  local modem_id
+  modem_id="$(get_modem_id || true)"
+  if [[ -z "${modem_id}" ]]; then
+    log "[gps] WARNING no modem found; skipping GPS alive check"
+    mark_step_done GPS_ALIVE
+    return 0
+  fi
+  sudo -n mmcli -m "${modem_id}" --location-enable-gps-raw --location-enable-gps-nmea || true
+  sudo -n mmcli -m "${modem_id}" --location-status || true
+  sudo -n mmcli -m "${modem_id}" --location-get || true
+  mark_step_done GPS_ALIVE
+}
+
 enable_i2c_if_possible() {
   [[ "${STEP_I2C_ENABLE:-}" == "done" ]] && return 0
   if command -v raspi-config >/dev/null 2>&1; then
@@ -382,9 +558,8 @@ install_system_agent() {
   deactivate
 
   log "[agent] creating directories"
-  sudo mkdir -p /var/lib/nereus/images /var/log/nereus/health /etc/nereus /mnt/nereus-media /var/tmp/nereus-transient
-  sudo chown -R pi:pi /var/lib/nereus /var/log/nereus /var/tmp/nereus-transient
-  sudo chmod 775 /var/tmp/nereus-transient
+  sudo mkdir -p /etc/nereus
+  create_and_test_runtime_paths
 
   log "[storage] validating noninteractive access for storage helper commands"
   sudo -n true || die "passwordless sudo is required for storage helpers"
@@ -396,14 +571,19 @@ install_system_agent() {
     -e "s|__DEVICE_ID__|${DEVICE_ID_VALUE}|g" \
     -e "s|__SYSTEM_CONFIG_CACHE_PATH__|/var/lib/nereus/system_config_cache_${SYSTEM_ID_VALUE}.json|g" \
     -e "s|__ENABLE_POWER_CONTROLLER__|${ENABLE_POWER_CONTROLLER_VALUE}|g" \
+    -e "s|__MODEM_IMEI__|${MODEM_IMEI_VALUE:-unknown}|g" \
+    -e "s|__SIM_ICCID__|${SIM_ICCID_VALUE:-unknown}|g" \
+    -e "s|__CELLULAR_OPERATOR_ID__|${CELLULAR_OPERATOR_ID_VALUE:-unknown}|g" \
+    -e "s|__CELLULAR_OPERATOR_NAME__|${CELLULAR_OPERATOR_NAME_VALUE:-unknown}|g" \
     "${TEMPLATES_DIR}/nereus-agent.env.template" \
-    | grep -Ev '^(ENABLE_WITTYPI|ALLOW_WITTYPI_FALLBACK|INSTALL_WITTYPI|POWER_CONTROLLER_BACKEND|WITTYPI_SCHEDULE_STATE_PATH)=' \
+    | grep -Ev '^(ENABLE_WITTYPI|ALLOW_WITTYPI_FALLBACK|INSTALL_WITTYPI|WITTYPI_SCHEDULE_STATE_PATH)=' \
     | sudo tee /etc/nereus/nereus-agent.env >/dev/null
 
   log "[agent] removing obsolete power-controller env vars from local env"
-  sudo sed -i '/^ENABLE_WITTYPI=/d;/^ALLOW_WITTYPI_FALLBACK=/d;/^INSTALL_WITTYPI=/d;/^POWER_CONTROLLER_BACKEND=/d;/^WITTYPI_SCHEDULE_STATE_PATH=/d' /etc/nereus/nereus-agent.env
+  sudo sed -i '/^ENABLE_WITTYPI=/d;/^ALLOW_WITTYPI_FALLBACK=/d;/^INSTALL_WITTYPI=/d;/^WITTYPI_SCHEDULE_STATE_PATH=/d' /etc/nereus/nereus-agent.env
   sudo chown root:root /etc/nereus/nereus-agent.env
   sudo chmod 600 /etc/nereus/nereus-agent.env
+  write_device_identity_file
 
   log "[agent] writing systemd service"
   sed -e "s|__REPO_DIR__|${REPO_DIR_VALUE}|g" "${TEMPLATES_DIR}/nereus-agent.service.template" | sudo tee /etc/systemd/system/nereus-agent.service >/dev/null
@@ -573,6 +753,10 @@ PY
     python -m py_compile "${py_files[@]}"
     log "[check] py_compile passed for system_agent modules"
   fi
+  if grep -Rni "WITTYPI_SCHEDULE_STATE_PATH\|hardware_name() == "wittypi"\|from system_agent import wittypi_controller" "${REPO_DIR_VALUE}/device/system_agent/src/system_agent" >/tmp/nereus_witty_refs.txt 2>/dev/null; then
+    cat /tmp/nereus_witty_refs.txt
+    die "Runtime Witty Pi references found in active system_agent code"
+  fi
   deactivate
 
   sudo systemctl status nereus-agent --no-pager || true
@@ -652,6 +836,10 @@ Install fieldcam_app:        true
 Health monitoring:           true
 BME280 internal env:         true
 LTE / ModemManager:          installed/enabled
+LTE modem IMEI:              ${MODEM_IMEI_VALUE:-unknown}
+SIM ICCID:                   ${SIM_ICCID_VALUE:-unknown}
+Cellular operator:           ${CELLULAR_OPERATOR_NAME_VALUE:-unknown} (${CELLULAR_OPERATOR_ID_VALUE:-unknown})
+Device identity file:        /etc/nereus/device_identity.json
 Prototype sudo mode:        pi NOPASSWD:ALL
 Obsolete sudoers rules:      removed if present
 External media storage:      enabled
@@ -673,6 +861,9 @@ Useful commands:
   tailscale status
   nmcli device status
   mmcli -L
+  mmcli -m 0
+  mmcli -i 0
+  sudo cat /etc/nereus/device_identity.json
   ip a show wwan0
   i2cdetect -y 1
   lifepo4wered-cli get
@@ -681,7 +872,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.7"
+  save_state_var "INSTALLER_VERSION" "4.9"
 
   require_sudo
   setup_prototype_passwordless_sudo
@@ -694,12 +885,16 @@ main() {
   ensure_private_repo_access
   install_base_packages
   setup_lte_userland
+  collect_lte_identity
   enable_i2c_if_possible
   clone_or_update_repo
+  install_lifepo4wered_if_selected
+  verify_lifepo4wered_hard_gate
   install_system_agent
   install_fieldcam_required
-  install_lifepo4wered_if_selected
   install_tailscale_if_requested
+  verify_lte_end_to_end
+  verify_gps_alive_nonblocking
   configure_field_ap_if_requested
   start_services_if_requested
   run_validation
