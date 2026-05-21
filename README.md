@@ -184,3 +184,9 @@ mmcli -i 0
 sudo cat /etc/nereus/device_identity.json
 ```
 
+
+## v5.0 note: LTE setup before wwan0 validation
+
+The installer now creates/updates the NetworkManager LTE connection named `lte` before running hard `wwan0` validation. The APN defaults to `iot0723.com.attz` and is stored in the installer resume state as `LTE_APN_VALUE`.
+
+If a previous install attempt stopped after Tailscale authentication because `wwan0` was missing, rerun `./install.sh`, choose to resume previous state, and the installer should continue into LTE connection setup before validating `wwan0`.

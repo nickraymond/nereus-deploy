@@ -9,6 +9,7 @@ DEFAULT_API_BASE="https://nereus-vision-dev.onrender.com"
 DEFAULT_REPO_SSH_URL="git@github.com:nickraymond/nereus-vision-dev.git"
 DEFAULT_REPO_BRANCH="staging"
 DEFAULT_REPO_DIR="$HOME/code/nereus-vision-dev"
+DEFAULT_LTE_APN="iot0723.com.attz"
 STATE_DIR="$HOME/.nereus-deploy"
 STATE_FILE="${STATE_DIR}/install.env"
 
@@ -242,6 +243,7 @@ preflight_questions() {
   REPO_URL_VALUE="$(prompt_default 'Private repo SSH URL' "${REPO_URL_VALUE:-$DEFAULT_REPO_SSH_URL}")"
   REPO_BRANCH_VALUE="$(prompt_default 'Repo branch to install' "${REPO_BRANCH_VALUE:-$DEFAULT_REPO_BRANCH}")"
   REPO_DIR_VALUE="$(prompt_default 'Repo install directory' "${REPO_DIR_VALUE:-$DEFAULT_REPO_DIR}")"
+  LTE_APN_VALUE="$(prompt_default 'LTE APN' "${LTE_APN_VALUE:-$DEFAULT_LTE_APN}")"
   POWER_CONTROLLER_CHOICE_VALUE="lifepo4wered"
   ENABLE_POWER_CONTROLLER_VALUE="true"
   INSTALL_LIFEPO4WERED_VALUE="true"
@@ -253,7 +255,7 @@ preflight_questions() {
   if prompt_yes_no_default_yes "Enable and start nereus-agent.service and fieldcam.service at end?"; then START_SERVICES_VALUE="true"; else START_SERVICES_VALUE="false"; fi
 
   local state_key
-  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE CONFIGURE_AP_VALUE START_SERVICES_VALUE; do
+  for state_key in HOSTNAME_VALUE TAILSCALE_HOSTNAME SYSTEM_ID_VALUE DEVICE_ID_VALUE API_BASE_VALUE REPO_URL_VALUE REPO_BRANCH_VALUE REPO_DIR_VALUE LTE_APN_VALUE POWER_CONTROLLER_CHOICE_VALUE ENABLE_POWER_CONTROLLER_VALUE INSTALL_LIFEPO4WERED_VALUE INSTALL_TAILSCALE_VALUE ENABLE_TAILSCALE_SSH_VALUE INSTALL_FIELDCAM_VALUE CONFIGURE_AP_VALUE START_SERVICES_VALUE; do
     if [[ -z "${!state_key+x}" ]]; then
       die "Internal installer error: expected ${state_key} to be set during preflight."
     fi
@@ -342,6 +344,83 @@ setup_lte_userland() {
 
 get_modem_id() {
   sudo -n mmcli -L 2>/dev/null | sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' | head -n 1
+}
+
+wait_for_modem() {
+  local max_wait_sec="${1:-90}"
+  local waited=0 modem_id=""
+  while (( waited <= max_wait_sec )); do
+    modem_id="$(get_modem_id || true)"
+    if [[ -n "${modem_id}" ]]; then
+      printf '%s' "${modem_id}"
+      return 0
+    fi
+    if (( waited == 0 )); then
+      log "[lte] waiting for modem to appear in ModemManager"
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  return 1
+}
+
+wait_for_wwan0() {
+  local max_wait_sec="${1:-90}"
+  local waited=0
+  while (( waited <= max_wait_sec )); do
+    if ip link show wwan0 >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( waited == 0 )); then
+      log "[lte] waiting for wwan0 interface"
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  return 1
+}
+
+configure_lte_connection() {
+  [[ "${STEP_LTE_CONNECTION:-}" == "done" ]] && return 0
+  LTE_APN_VALUE="${LTE_APN_VALUE:-$DEFAULT_LTE_APN}"
+  save_state_var LTE_APN_VALUE "${LTE_APN_VALUE}"
+
+  log "[lte] configuring NetworkManager LTE connection apn=${LTE_APN_VALUE}"
+  setup_lte_userland
+
+  local modem_id
+  modem_id="$(wait_for_modem 90 || true)"
+  if [[ -z "${modem_id}" ]]; then
+    sudo -n mmcli -L || true
+    lsusb || true
+    log "[lte] modem not visible after waiting; retriggering udev and restarting ModemManager once"
+    sudo udevadm trigger || true
+    sudo systemctl restart ModemManager NetworkManager || true
+    sleep 15
+    modem_id="$(wait_for_modem 60 || true)"
+  fi
+  [[ -n "${modem_id}" ]] || die "LTE modem not found. Check Sixfab/Telit USB mode, power, and hardware seating before LTE validation."
+
+  sudo nmcli radio wwan on || true
+  if nmcli -t -f NAME connection show | grep -qx 'lte'; then
+    log "[lte] existing nmcli connection 'lte' found; updating APN/autoconnect"
+    sudo nmcli connection modify lte gsm.apn "${LTE_APN_VALUE}" connection.autoconnect yes
+  else
+    log "[lte] creating nmcli GSM connection 'lte'"
+    sudo nmcli connection add type gsm ifname "*" con-name lte apn "${LTE_APN_VALUE}"
+    sudo nmcli connection modify lte connection.autoconnect yes
+  fi
+
+  sudo nmcli connection up lte || true
+  if ! wait_for_wwan0 90; then
+    nmcli device status || true
+    sudo -n mmcli -m "${modem_id}" || true
+    ip a || true
+    die "wwan0 did not appear after LTE connection setup"
+  fi
+
+  log "[lte] LTE connection configured; wwan0 present"
+  mark_step_done LTE_CONNECTION
 }
 
 collect_lte_identity() {
@@ -490,6 +569,7 @@ verify_lifepo4wered_hard_gate() {
 verify_lte_end_to_end() {
   [[ "${STEP_LTE_E2E:-}" == "done" ]] && return 0
   log "[lte] end-to-end wwan0 validation"
+  configure_lte_connection
   sudo -n mmcli -L || die "mmcli cannot list modem"
   ip a show wwan0 || die "wwan0 interface missing"
   ip route || true
@@ -835,7 +915,8 @@ Tailscale SSH:               ${ENABLE_TAILSCALE_SSH_VALUE}
 Install fieldcam_app:        true
 Health monitoring:           true
 BME280 internal env:         true
-LTE / ModemManager:          installed/enabled
+LTE / ModemManager:          installed/enabled/configured
+LTE APN:                     ${LTE_APN_VALUE:-unknown}
 LTE modem IMEI:              ${MODEM_IMEI_VALUE:-unknown}
 SIM ICCID:                   ${SIM_ICCID_VALUE:-unknown}
 Cellular operator:           ${CELLULAR_OPERATOR_NAME_VALUE:-unknown} (${CELLULAR_OPERATOR_ID_VALUE:-unknown})
@@ -872,7 +953,7 @@ EOF
 
 main() {
   maybe_resume_existing_state
-  save_state_var "INSTALLER_VERSION" "4.9"
+  save_state_var "INSTALLER_VERSION" "5.0"
 
   require_sudo
   setup_prototype_passwordless_sudo
@@ -885,6 +966,7 @@ main() {
   ensure_private_repo_access
   install_base_packages
   setup_lte_userland
+  configure_lte_connection
   collect_lte_identity
   enable_i2c_if_possible
   clone_or_update_repo
